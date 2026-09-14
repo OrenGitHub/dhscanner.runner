@@ -15,8 +15,21 @@ services:
     networks:
       - dhscanner
   
+  # queryengine built from source so we can iterate on utils.pl / templates /
+  # Api.hs while prepping the kbapi harness (POST /api?kb_location=...). The
+  # other three services stay prebuilt because they run before /api is reached
+  # and don't affect the kbapi loop; a full cold rebuild of all four is ~6 min
+  # on a modern laptop (see docs/LAYOUT.md "Prebuilt Haskell images"). To flip
+  # a sibling to source, mirror this stanza with the right service dir.
+  #
+  # kbapi dependency: the queryengine's Dockerfile pulls dhscanner-kbapi from
+  # Hackage (>= 1.0.7). To iterate on kbapi + queryengine together without a
+  # Hackage roundtrip, temporarily vendor kbapi via a cabal.project override
+  # (see the git history of this file for the monorepo-rooted variant that was
+  # used during the OWASP-IL 2026 auth-evidence work).
   queryengine:
-    image: orenishdocker/dhscanner-queryengine:1.0.52-x64
+    build:
+      context: ../dhscanner.core/dhscanner.service.queryengine
     ports:
       - 3000:3000
     networks:
