@@ -652,5 +652,104 @@ jobs:
           echo "PASS: utils_url_flows_to_return_value matched $match_count unique URL construction site(s) inside getUploadSignedUrl"
           rm -f url_flow_query.log
 
+      - name: assert 2x2 grid POST endpoint enumeration on formbricks KB
+        run: |
+          # Runs the 2x2 grid predicates ( { authenticated, unauthenticated }
+          # x { POST } side ) from the queryengine's baked-in utils.pl against
+          # the formbricks KB the earlier step just generated. Snapshots the
+          # exact set of POST handlers formbricks v3.16.0 exposes today :
+          #
+          #   - utils_unauthenticated_http_post_handler_request_object/3
+          #     -> 18 pre-auth POST handlers.
+          #   - utils_authenticated_http_post_handler_request_object/5
+          #     -> 2 authenticated POST handlers, both `checkAuth`-gated
+          #     via the shape recognizer's `by_all_but_one_bad_return`
+          #     AuthEvidence tag.
+          #
+          # See tests/expected/facts/formbricks/post_endpoints.txt for the
+          # full expected snapshot ( sorted alphabetically by URL, one
+          # endpoint per line, prefixed with "UNAUTH: " or "AUTH:   " ).
+          #
+          # This step is the end-to-end sensor for the whole POST-side
+          # recognition pipeline landing on formbricks :
+          #   1. utils_http_post_handler_request_object_nextjs/3 : the
+          #      Next.js handler shape gate ( param name in {req, request},
+          #      param type in {next/server.NextRequest, nodejs.Request},
+          #      file ends with route.ts ).
+          #   2. utils_authenticating_function/3 : the shape-based auth
+          #      recognizer ( no tier-1 name catalog by design -- see the
+          #      `:- dynamic(utils_authenticating_function_name/1)` comment
+          #      in utils.pl ).
+          #   3. utils_authenticating_function_by_return_values/1 : the
+          #      K-bad-http + 1-fall-through shape gate.
+          #   4. AuthEvidence tagged union payload ( ByHeaderNullCheck /
+          #      ByAllButOneBadReturn ) roundtripped through swipl format/2.
+          #
+          # If ANY of the above regresses, the diff below fails. Additions,
+          # removals, or name/evidence edits require a deliberate audit
+          # ( see the header comment in the expected snapshot file ).
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "querying queryengine's swipl for POST endpoint enumeration"
+          # See the "assert shape recognizer detects checkAuth" step above
+          # for the full rationale on `set_prolog_flag(character_escapes,
+          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
+          # consult sequence ; the same reasoning applies here verbatim.
+          query="consult('/queryengine/utils.pl'), \
+                 set_prolog_flag(character_escapes, false), \
+                 dynamic(kb_callable_returns_without_value/2), \
+                 dynamic(kb_call_1st_party_func_defined_in_file/3), \
+                 dynamic(kb_call_1st_party_func_defined_in_dir/3), \
+                 dynamic(kb_func_def/4), \
+                 dynamic(kb_called_from/2), \
+                 dynamic(kb_call_resolved/2), \
+                 dynamic(kb_callable_returns_value/2), \
+                 dynamic(kb_dataflow_edge/2), \
+                 dynamic(kb_param_i_of_callable/3), \
+                 dynamic(kb_param_has_name/2), \
+                 dynamic(kb_param_has_resolved_type/2), \
+                 dynamic(kb_arg_i_for_call/3), \
+                 dynamic(kb_const_string/2), \
+                 dynamic(kb_gated_return/2), \
+                 dynamic(kb_const_null/1), \
+                 consult('${formbricks_kb_path}'), \
+                 findall(U, utils_unauthenticated_http_post_handler_request_object(_, _, U), UN), \
+                 sort(UN, SUN), \
+                 forall(member(U, SUN), format('UNAUTH: ~w~n', [U])), \
+                 findall(U-Fn-Ev, utils_authenticated_http_post_handler_request_object(_, _, U, Fn, Ev), AU), \
+                 sort(AU, SAU), \
+                 forall(member(U-Fn-Ev, SAU), format('AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
+                 halt(0)"
+          set +e
+          $compose exec -T queryengine swipl -g "$query" -t "halt(1)" | tee post_enum_raw.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: swipl 2x2 grid POST enumeration query errored"
+            exit 1
+          fi
+          # Filter to the assertion lines only ( strip swipl banner / warnings ).
+          grep -E '^(UNAUTH|AUTH):' post_enum_raw.log > post_enum.actual
+          # Strip '#'-comments and blank lines from the expected snapshot
+          # so authors can annotate freely without breaking the diff.
+          grep -Ev '^\s*(#|$)' tests/expected/facts/formbricks/post_endpoints.txt > post_enum.expected
+          echo "expected count: $(wc -l < post_enum.expected)"
+          echo "actual   count: $(wc -l < post_enum.actual)"
+          set +e
+          delta=$(diff post_enum.expected post_enum.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: POST endpoint enumeration snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          echo "PASS: 2x2 grid POST endpoint enumeration matches the expected snapshot ($(wc -l < post_enum.actual) endpoints)"
+          rm -f post_enum_raw.log post_enum.actual post_enum.expected
+
       - name: remove formbricks tested code
         run: rm -rf formbricks
