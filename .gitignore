@@ -27,3 +27,15 @@ agent/.env
 # Local scratch / build outputs that have appeared in this repo before
 happy-build.log
 output.json
+
+# Debug scratch that accumulates during iterative queryengine work :
+#   *.log                       -- docker build / compose / cli / scan logs
+#   formbricks_kb.pl            -- ~50MB KB dump pulled via `docker cp` from
+#                                  the queryengine container ( kb_XXX.pl )
+#   query_*.pl / query_*.log    -- ad-hoc swipl diagnostic scripts + runs
+#                                  ( eg during utils_hoc_dict_handler_unwrap
+#                                  bring-up ; see PR #69 history for context )
+*.log
+/formbricks_kb.pl
+/query_*.pl
+/query_*.log
