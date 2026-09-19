@@ -617,5 +617,124 @@ jobs:
           echo "PASS: 2x2 grid POST endpoint enumeration matches the expected snapshot ($(wc -l < post_enum.actual) endpoints)"
           rm -f post_enum_raw.log post_enum.actual post_enum.expected
 
+      - name: assert 3x2 grid HTTP endpoint enumeration on formbricks KB
+        run: |
+          # Runs the 3x2 grid predicates ( { authenticated, unauthenticated }
+          # x { GET, POST, PUT } ) from the queryengine's baked-in utils.pl
+          # against the formbricks KB the earlier step just generated.
+          # Snapshots the exact set of handlers formbricks v3.16.0 exposes
+          # today :
+          #
+          #   GET  : 9 pre-auth + 0 auth
+          #   POST : 18 pre-auth + 2 auth ( both `checkAuth`-gated )
+          #   PUT  : 7 pre-auth + 0 auth
+          #
+          # See tests/expected/facts/formbricks/http_endpoints.txt for the
+          # full expected snapshot ( grouped GET / POST / PUT, sorted
+          # alphabetically by URL inside each group ).
+          #
+          # This step is the end-to-end sensor for the verb-widening +
+          # v2 HOC-wrapper recognition landing on formbricks :
+          #   1. utils_http_{get,post,put}_handler_request_object_nextjs
+          #      : the Next.js handler shape gate.
+          #   2. utils_hoc_dict_handler_unwrap/2 : the thin-wrapper
+          #      unwrap used by the PUT v2 path ( body_length=1 +
+          #      dictify/kv walk + inner callable source-body-length
+          #      >= 1 ). Depends on codegen's numSourceStmts correction
+          #      for the parser's fallthrough_return_null trailer.
+          #   3. The OWASP-IL 2026 running example
+          #      PUT /api/v2/management/contacts/bulk MUST appear.
+          #
+          # If ANY of the above regresses, the diff below fails. The
+          # contacts/bulk PUT line is also grepped explicitly so a
+          # snapshot edit that quietly drops it cannot pass.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "querying queryengine's swipl for 3x2 GET/POST/PUT endpoint enumeration"
+          # See the "assert shape recognizer detects checkAuth" step above
+          # for the full rationale on `set_prolog_flag(character_escapes,
+          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
+          # consult sequence ; the same reasoning applies here verbatim.
+          # `kb_callable_source_body_length/2` is required by the PUT
+          # wrapper unwrap ( utils_hoc_dict_handler_unwrap/2 ).
+          query="consult('/queryengine/utils.pl'), \
+                 set_prolog_flag(character_escapes, false), \
+                 dynamic(kb_callable_returns_without_value/2), \
+                 dynamic(kb_call_1st_party_func_defined_in_file/3), \
+                 dynamic(kb_call_1st_party_func_defined_in_dir/3), \
+                 dynamic(kb_func_def/4), \
+                 dynamic(kb_called_from/2), \
+                 dynamic(kb_call_resolved/2), \
+                 dynamic(kb_callable_returns_value/2), \
+                 dynamic(kb_callable_source_body_length/2), \
+                 dynamic(kb_dataflow_edge/2), \
+                 dynamic(kb_param_i_of_callable/3), \
+                 dynamic(kb_param_has_name/2), \
+                 dynamic(kb_param_has_resolved_type/2), \
+                 dynamic(kb_arg_i_for_call/3), \
+                 dynamic(kb_const_string/2), \
+                 dynamic(kb_gated_return/2), \
+                 dynamic(kb_const_null/1), \
+                 consult('${formbricks_kb_path}'), \
+                 findall(U, utils_unauthenticated_http_get_handler_request_object(_, _, U), GUN), \
+                 sort(GUN, SGUN), \
+                 forall(member(U, SGUN), format('GET UNAUTH: ~w~n', [U])), \
+                 findall(U-Fn-Ev, utils_authenticated_http_get_handler_request_object(_, _, U, Fn, Ev), GAU), \
+                 sort(GAU, SGAU), \
+                 forall(member(U-Fn-Ev, SGAU), format('GET AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
+                 findall(U, utils_unauthenticated_http_post_handler_request_object(_, _, U), PUN), \
+                 sort(PUN, SPUN), \
+                 forall(member(U, SPUN), format('POST UNAUTH: ~w~n', [U])), \
+                 findall(U-Fn-Ev, utils_authenticated_http_post_handler_request_object(_, _, U, Fn, Ev), PAU), \
+                 sort(PAU, SPAU), \
+                 forall(member(U-Fn-Ev, SPAU), format('POST AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
+                 findall(U, utils_unauthenticated_http_put_handler_request_object(_, _, U), UUN), \
+                 sort(UUN, SUUN), \
+                 forall(member(U, SUUN), format('PUT UNAUTH: ~w~n', [U])), \
+                 findall(U-Fn-Ev, utils_authenticated_http_put_handler_request_object(_, _, U, Fn, Ev), UAU), \
+                 sort(UAU, SUAU), \
+                 forall(member(U-Fn-Ev, SUAU), format('PUT AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
+                 halt(0)"
+          set +e
+          $compose exec -T queryengine swipl -g "$query" -t "halt(1)" | tee http_enum_raw.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: swipl 3x2 grid HTTP enumeration query errored"
+            exit 1
+          fi
+          grep -E '^(GET|POST|PUT) (UNAUTH|AUTH):' http_enum_raw.log > http_enum.actual
+          grep -Ev '^\s*(#|$)' tests/expected/facts/formbricks/http_endpoints.txt > http_enum.expected
+          echo "expected count: $(wc -l < http_enum.expected)"
+          echo "actual   count: $(wc -l < http_enum.actual)"
+          owasp_put='PUT UNAUTH: apps/web/modules/ee/contacts/api/v2/management/contacts/bulk'
+          if ! grep -Fqx "$owasp_put" http_enum.actual; then
+            echo "FAIL: OWASP target PUT was not discovered :"
+            echo "  $owasp_put"
+            exit 1
+          fi
+          echo "PASS: OWASP target PUT discovered"
+          set +e
+          delta=$(diff http_enum.expected http_enum.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: 3x2 HTTP endpoint enumeration snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          get_unauth=$(grep -c '^GET UNAUTH:' http_enum.actual || true)
+          get_auth=$(grep -c '^GET AUTH:' http_enum.actual || true)
+          post_unauth=$(grep -c '^POST UNAUTH:' http_enum.actual || true)
+          post_auth=$(grep -c '^POST AUTH:' http_enum.actual || true)
+          put_unauth=$(grep -c '^PUT UNAUTH:' http_enum.actual || true)
+          put_auth=$(grep -c '^PUT AUTH:' http_enum.actual || true)
+          echo "PASS: 3x2 grid matches snapshot  GET ${get_unauth}/${get_auth}  POST ${post_unauth}/${post_auth}  PUT ${put_unauth}/${put_auth}  (unauth/auth)"
+          rm -f http_enum_raw.log http_enum.actual http_enum.expected
+
       - name: remove formbricks tested code
         run: rm -rf formbricks

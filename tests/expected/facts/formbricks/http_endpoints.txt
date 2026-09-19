@@ -1,0 +1,80 @@
+# 3x2 grid HTTP endpoint enumeration on formbricks v3.16.0
+#
+# Expected output of the swipl query in the "assert 3x2 grid HTTP endpoint
+# enumeration on formbricks KB" CI step. Six predicates in play, all defined
+# in dhscanner.service.queryengine/utils.pl :
+#
+#   { GET, POST, PUT } x { unauthenticated /3, authenticated /5 }
+#
+# Prefixes :
+#   "<METHOD> UNAUTH: <url>"
+#   "<METHOD> AUTH:   <url>  fn=<AuthFuncName>  ev=<AuthEvidence>"
+#
+# Counts today ( unique URLs after Prolog sort/2 ) :
+#   GET  : 9 pre-auth + 0 auth
+#   POST : 18 pre-auth + 2 auth   ( both `checkAuth` / by_all_but_one_bad_return )
+#   PUT  : 7 pre-auth + 0 auth
+#
+# The OWASP-IL 2026 running-example endpoint MUST appear in the PUT
+# UNAUTH bucket :
+#
+#   PUT UNAUTH: apps/web/modules/ee/contacts/api/v2/management/contacts/bulk
+#
+# That line is the v2 `authenticatedApiClient` HOC-wrapper PUT. It is in
+# the UNAUTH bucket on purpose : auth lives on the wrapper's HOC call,
+# and the current auth predicates look for an auth call *inside* the
+# bound handler ( the inner lambda after `utils_hoc_dict_handler_unwrap/2` ).
+# Discovery of the wrapper is the thing this snapshot guards ; flipping
+# the auth label is a separate follow-up.
+#
+# Lines are grouped GET / POST / PUT and sorted alphabetically by URL
+# inside each group ( Prolog sort/2 semantics ) so the diff against
+# `actual` is order-stable. Lines starting with '#' and blank lines
+# are stripped by the CI checker before comparison.
+#
+# If this snapshot changes, DELIBERATE audit is required :
+#   - Additions   : verify the new endpoint is real ( did formbricks add
+#                   a route ? ) or that the recognizer widening was
+#                   intentional ( eg POST/GET growing a wrapper path ).
+#   - Removals    : verify the missing endpoint is genuinely gone
+#                   ( not a regression in the recognizer ).
+#   - AUTH edits  : verify the auth-function name + AuthEvidence tag
+#                   are correct.
+#   - The contacts/bulk PUT line disappearing is always a regression.
+
+GET UNAUTH: apps/web/app/api/google-sheet
+GET UNAUTH: apps/web/app/api/v1/integrations/airtable
+GET UNAUTH: apps/web/app/api/v1/integrations/airtable/callback
+GET UNAUTH: apps/web/app/api/v1/integrations/airtable/tables
+GET UNAUTH: apps/web/app/api/v1/integrations/notion
+GET UNAUTH: apps/web/app/api/v1/integrations/notion/callback
+GET UNAUTH: apps/web/app/api/v1/integrations/slack
+GET UNAUTH: apps/web/app/api/v1/integrations/slack/callback
+GET UNAUTH: apps/web/modules/ee/auth/saml/api/authorize
+POST UNAUTH: apps/web/app/api/(internal)/pipeline
+POST UNAUTH: apps/web/app/api/v1/client/[environmentId]/displays
+POST UNAUTH: apps/web/app/api/v1/client/[environmentId]/responses
+POST UNAUTH: apps/web/app/api/v1/client/[environmentId]/storage
+POST UNAUTH: apps/web/app/api/v1/client/[environmentId]/storage/local
+POST UNAUTH: apps/web/app/api/v2/client/[environmentId]/displays
+POST UNAUTH: apps/web/app/api/v2/client/[environmentId]/responses
+POST UNAUTH: apps/web/modules/api/v2/management/contact-attribute-keys
+POST UNAUTH: apps/web/modules/api/v2/management/responses
+POST UNAUTH: apps/web/modules/api/v2/management/webhooks
+POST UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/project-teams
+POST UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/teams
+POST UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/users
+POST UNAUTH: apps/web/modules/ee/auth/saml/api/callback
+POST UNAUTH: apps/web/modules/ee/auth/saml/api/token
+POST UNAUTH: apps/web/modules/ee/billing/api
+POST UNAUTH: apps/web/modules/ee/contacts/api/v1/client/[environmentId]/user
+POST UNAUTH: apps/web/modules/ee/contacts/api/v2/management/contacts
+POST AUTH:   apps/web/app/api/v1/management/storage  fn=checkAuth  ev=by_all_but_one_bad_return
+POST AUTH:   apps/web/app/api/v1/management/storage/local  fn=checkAuth  ev=by_all_but_one_bad_return
+PUT UNAUTH: apps/web/app/api/v1/client/[environmentId]/responses/[responseId]
+PUT UNAUTH: apps/web/modules/api/v2/management/contact-attribute-keys/[contactAttributeKeyId]
+PUT UNAUTH: apps/web/modules/api/v2/management/responses/[responseId]
+PUT UNAUTH: apps/web/modules/api/v2/management/webhooks/[webhookId]
+PUT UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/project-teams
+PUT UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/teams/[teamId]
+PUT UNAUTH: apps/web/modules/ee/contacts/api/v2/management/contacts/bulk
