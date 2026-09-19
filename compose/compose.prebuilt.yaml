@@ -15,31 +15,7 @@ services:
     networks:
       - dhscanner
 
-  # queryengine is built from local source ( not from a Docker Hub
-  # pin ) while its per-service CI is publishing a new -x64 tag that
-  # bundles today's wrapper-style HOC-unwrap fix. Specifically :
-  #
-  #   `utils_hoc_dict_handler_unwrap/2` now gates the inner handler on
-  #   `kb_callable_source_body_length(Handler, N), N >= 1` instead of
-  #   `kb_param_i_of_callable(_, _, Handler)`. The latter never fires
-  #   for object-destructured arrows like
-  #     `async ({ authentication, parsedInput }) => { ... }`
-  #   which is the exact shape every Formbricks v2 `authenticatedApiClient`
-  #   inner handler uses -- so any queryengine tag predating today would
-  #   silently regress every wrapper-style PUT / POST / GET route
-  #   ( including the OWASP-IL 2026 running example
-  #   `apps/web/modules/ee/contacts/api/v2/management/contacts/bulk` ).
-  #
-  # The fix DOES live on the queryengine submodule now
-  # ( dhscanner.core -> dhscanner.service.queryengine ef751da , see the
-  # PUT handler queries + wrapper-style HOC recognition commit ) , so
-  # source builds are complete. Flip queryengine back to `image:` once
-  # the queryengine on-push-to-main CI publishes the follow-on
-  # `orenishdocker/dhscanner-queryengine:<ver>-x64` tag ( the VERSION
-  # auto-bump commit right after ef751da ).
   queryengine:
-    build:
-      context: ../dhscanner.core/dhscanner.service.queryengine
-      dockerfile: Dockerfile
+    image: orenishdocker/dhscanner-queryengine:1.0.56-x64
     networks:
       - dhscanner
