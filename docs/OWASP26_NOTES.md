@@ -279,9 +279,14 @@ Reserved slots — content TBD.
 
 ### Slide 18 — Demo (PENDING)
 
-**Target:** formbricks CWE-22 path traversal.
-**Fix commit:** `9d84bc0c…`.
-**Amplifier:** **M=4 sibling call-sites** to `validateAndResolvePath` — one flawed helper, four call-sites all inheriting the flaw. Big story.
+**Two-part structure** (settled 2026-09-18):
+
+- **Opening act — workflow demonstration on a *safe* endpoint.** `PUT /api/v2/management/contacts/bulk` (see §5.11). Exercises the coarse-to-fine loop end-to-end: CF-reach enumerates 6 SQL sinks; tier-1 categorical predicate clears 4; tier-2 structural predicate clears the remaining 2 raw-tagged residues (no `Prisma.raw` in interpolations); LLM evicts the endpoint with a well-founded *"safe, move on"* verdict. **No DF invoked at any point.** Great honesty payoff: *"the first candidate we look at turns out safe. That's not a limitation — it's the point."*
+- **Finale — vulnerability discovery on a *paired* endpoint.** formbricks CWE-22 path traversal via bucket-C H1↔H2 pair-vertex discovery (§5.5 + §4.8 + §13). Fix commit `9d84bc0c…`. Amplifier: **M=4 sibling call-sites** to `validateAndResolvePath` — one flawed helper, four call-sites all inheriting the flaw. Big story.
+
+The opening act lands the *workflow*; the finale lands the *finding*. Two beats, one demo.
+
+**Prerequisites for the opening act (Assignments 1, 3, 4 in §14):** generic HOC recognizer (surfaces `PUT`), bounded CF-reach kbapi predicate (the query), sink-family hierarchy (tier-1/tier-2 clearance). Assignment 2 (`tx.*` inside `$transaction`) is DEFERRED but load-bearing for the opening act's 6-sink count.
 
 ### Slides 19–21 — Generalize / Architecture / Wrap (PENDING)
 
@@ -343,6 +348,26 @@ Modern frameworks trend toward colocating the routing, wiring, and handler into 
 
 Talk is stronger without direct naming. *Silent snipes are the best snipes.* The audience knows exactly who is meant when we say "predefined ruleset" and "hundreds of QL queries." Direct naming invites tribalism; silence invites recognition.
 
+### 4.8 Endpoint taxonomy: pre-auth / authenticated / capability-verified
+
+Three-way, not two-way. The dividing line between "authenticated" and "capability-verified" is **provenance of the gate token**, not "how much crypto is involved":
+
+| bucket | gate provenance | first-pass enumeration |
+|---|---|---|
+| **A. Pre-auth**            | no gate                                                            | **yes** |
+| **B. Authenticated**       | gate issued *out-of-band* (login, OAuth, API-key admin)            | **yes** |
+| **C. Capability-verified** | gate issued *by another endpoint in this same codebase*            | **no — surfaced only by cross-endpoint pairing** |
+
+Bucket C is deliberately excluded from the first-pass grid: analyzing a C endpoint in isolation is meaningless — its input surface (the capability) is not attacker-controlled unless its pair has a bug, and surfacing it in the first pass only generates noise. C endpoints enter the LLM's queue **as pair-vertices**, when some already-explored H1's response URL literal KB-resolves to them. Full story + implementation plan: §13. Cross-repo evidence for the pattern's generality: §5.8.
+
+**Working name only.** "Capability-verified" is a placeholder — the concept it names (**possession-of-token-issued-by-another-endpoint = authorization**) predates the term and deserves a better label before it lands on a slide. Alternatives to explore: *delegated-authority*, *pair-authorized*, *cross-endpoint-gated*. (*Signed-handoff* is a viable name but only for the cryptographic subset — see §5.9 for opaque-token instances.)
+
+**Three dimensions of variation across instances of bucket C** — all KB-visible, invariant to the exact mechanism used:
+
+- **Capability mechanism** — stateless cryptographic (HMAC / JWT — §5.5, §5.8) *or* stateful opaque DB-backed random token (64-char random string in §5.9, UUID4 primary key in §5.10). The invariant is *unforgeability* + *possession-implies-authorization*, not "signed."
+- **Delivery channel** — HTTP response body (§5.5, §5.8) *or* out-of-band (email — §5.9, §5.10). The KB-visible edge is *H1's code constructs the URL literal + binds the capability*; how that URL then reaches the client is downstream.
+- **Pre-auth-signaling idiom** (H2 side — how the framework declares "no session consulted here") — derived-via-dataflow (Next.js, §5.5), derived-via-call-graph (Gitea, §5.8), attribute + dataflow (Concrete CMS, §5.9), or **declarative decorator** (`@login_not_required` in Django 5.1+, §5.10). Weblate's is the cheapest to detect — one class-decorator attribute lookup, no dataflow needed. Every framework has its own idiom; the KB must absorb all four (and any new ones we find). This dimension directly informs the recognizer-widening work planned in [`AUTH_POST_RECALL_GAPS.md`](AUTH_POST_RECALL_GAPS.md).
+
 ---
 
 ## 5. Concrete Evidence Base
@@ -390,6 +415,7 @@ if (!session) {
 - **Vuln class:** CWE-22 (path traversal).
 - **Fix commit:** `9d84bc0c…`.
 - **Amplifier:** M=4 sibling call-sites to `validateAndResolvePath`.
+- **Pair structure:** the vuln is an H1↔H2 capability-verified pair (see §4.8 for taxonomy). H2 (byte-sink) is not in the first-pass endpoint enumeration by design — it enters the LLM's queue only when H1's response URL literal resolves to it. Two independent cross-repo instances of the same pair pattern documented in §5.8 (gitea LFS + Actions v4).
 - **Extended demo notes:** `demo/formbricks.md` (162 KB — only first 200 lines read so far).
 
 ### 5.6 utils.pl (Slide 10 verbal callback)
@@ -406,6 +432,162 @@ if (!session) {
 - **21 services, 5 compose files.**
 - **7 language frontends:** `cs`, `go`, `js`, `php`, `py`, `rb`, `ts`. Plus YAML in-proc.
 - **Job status states** live in Redis.
+
+### 5.8 gitea — Capability-verifier endpoint pairs (bucket-C generality evidence)
+
+Two independent instances of the same H1↔H2 pattern in a single well-maintained repo, using two different signing mechanisms — cross-repo confirmation that formbricks §5.5 is not idiosyncratic and that bucket C (§4.8) is a real recurrent class.
+
+**Instance 1 — Git LFS (JWT capability in `Authorization` header).**
+
+| role | route / callable | file:line |
+|---|---|---|
+| H1 (signer)       | `POST .../info/lfs/objects/batch` → `BatchHandler`             | `gitea/services/lfs/server.go:192` |
+| H2 (byte sink)    | `PUT .../info/lfs/objects/{oid}/{size}` → `UploadHandler`      | `gitea/services/lfs/server.go:306` |
+| capability build  | `buildObjectResponse` — sets `Actions["upload"].Header["Authorization"]` | `gitea/services/lfs/server.go:488-521` |
+| capability verify | `handleLFSToken` — HMAC-SHA256 JWT parse against `setting.LFS.JWTSecretBytes` | `gitea/services/lfs/server.go:577-618` |
+| router pairing    | side-by-side `m.Post`/`m.Put` binding                          | `gitea/routers/common/lfs.go:17-22` |
+
+**Instance 2 — Gitea Actions Artifacts v4 (URL-query HMAC capability).**
+
+| role | route / callable | file:line |
+|---|---|---|
+| H1 (signer)       | internal caller of `buildArtifactURL` — HMAC over query params | `gitea/routers/api/actions/artifactsv4.go:163-177` |
+| H2 (byte sink)    | `PUT .../UploadArtifact?sig=…` → `uploadArtifact`              | `gitea/routers/api/actions/artifactsv4.go:395` |
+| capability verify | `verifySignature` — `hmac.Equal` + expiry check                | `gitea/routers/api/actions/artifactsv4.go:217-241` |
+
+**Framework invariance.** Different language (Go vs TS), different router (Gitea chi-derived twice vs Next.js App Router), different capability format (JWT vs URL-HMAC vs form-field HMAC). **Same shape.** Combined with formbricks §5.5, that's three data points across two independent repos.
+
+**Q&A ammo.** The LFS maintainers themselves reason about *capability scope across the pair* in a prose comment at `gitea/services/lfs/server.go:261-270` (`// The object exists in the content store but is not linked to this repo. Do not auto-link it based on cross-repo access…`). Exactly the class of pair-property the query loop is designed to make explicit — *"the maintainers already know this class exists; they defend it in prose. We want to defend it in queries."*
+
+### 5.9 concretecms — Capability-verifier endpoint pairs (opaque-token + email-delivery variant)
+
+Two independent instances of the H1↔H2 pattern in the same auth controller — with **two structural variations from §5.8** that widen bucket C (§4.8): the capability is a stateful DB-backed opaque token rather than a stateless cryptographic assertion, and delivery is out-of-band via email rather than in the HTTP response body. Third language (PHP) after TS (§5.5) and Go (§5.8).
+
+**Shared primitive.** Both instances build on `ValidationHash` — a random 64-char string INSERTed into `UserValidationHashes` (uID, uHash, uDateGenerated, type), verified by DB lookup with no session touch:
+
+| role | callable | file:line |
+|---|---|---|
+| capability build     | `ValidationHash::add`                    | `concretecms/concrete/src/User/ValidationHash.php:53-64` |
+| capability verify    | `ValidationHash::getUserID` / `isValid`  | `concretecms/concrete/src/User/ValidationHash.php:74-83`, `111-116` |
+
+**Instance 1 — Password reset (H1 pre-auth, H2 pre-auth).**
+
+| role | callable | file:line |
+|---|---|---|
+| H1 (issuer)      | `forgot_password()` — takes email, generates hash, constructs URL, emails to user           | `concretecms/concrete/authentication/concrete/controller.php:216-317` |
+| URL construction | `View::url('/login', 'callback', ..., 'change_password', $uHash)`                            | `concretecms/concrete/authentication/concrete/controller.php:279-285` |
+| delivery         | mail template `forgot_password`                                                              | `concretecms/concrete/authentication/concrete/controller.php:299-302` |
+| H2 (verifier)    | `change_password($uHash)` — verifies capability, `$ui->changePassword(...)`, deletes token   | `concretecms/concrete/authentication/concrete/controller.php:319-355` |
+
+**Instance 2 — Email verification (H1 called by registration flow, H2 pre-auth).**
+
+| role | callable | file:line |
+|---|---|---|
+| H1 (issuer)      | `StatusService::sendEmailValidation($user)`                                                  | `concretecms/concrete/src/User/StatusService.php:27-44` |
+| capability build | `UserInfo::setupValidation()` — inserts fresh hash                                           | `concretecms/concrete/src/User/UserInfo.php:679-692` |
+| delivery         | mail template `validate_user_email`                                                          | `concretecms/concrete/src/User/StatusService.php:42-43` |
+| H2 (verifier)    | `v($hash = '')` — verifies hash, `$ui->markValidated()` + `triggerActivate('register_activate', USER_SUPER_ID)` | `concretecms/concrete/authentication/concrete/controller.php:458-473` |
+
+**Framework invariance across §5.5 + §5.8 + §5.9.** Three languages (TS / Go / PHP), three routers (Next.js App Router / Gitea chi-derived / Concrete CMS single-page controllers), four capability mechanisms (form-field HMAC / JWT / URL-query HMAC / opaque DB token), two delivery channels (HTTP response body / email). **Same shape.** The invariant that survives every instance is *H1's code constructs a URL literal that resolves to H2 and binds a capability* — everything downstream of that emission varies.
+
+**Note on pre-auth H1.** Both H1 and H2 in Instance 1 are pre-auth (no login required — that's the point of a password-reset flow). This is subtly different from the formbricks / gitea instances where H1 is authenticated. It means the discovery edge is *pre-auth H1 → capability-verified H2*, which is still a valid instance of the bucket-C pattern — the queue-dynamics story from §13 applies unchanged, just with a pre-auth H1 at the seed. Good complementary data point: bucket C's pair edges can originate from either A or B.
+
+### 5.10 weblate — Capability-verifier endpoint pair (Django decorator-declared H2)
+
+Fourth-language instance of the H1↔H2 pattern (Python / Django), and the cleanest bucket-C H2 signal in the evidence base — H2 declares its pre-auth status via a Django 5.1+ class-level decorator (`@login_not_required`), no dataflow needed.
+
+**Instance — User invitation flow (H1 authenticated, H2 pre-auth via decorator).**
+
+| role | callable | file:line |
+|---|---|---|
+| H1 (issuer)          | `Invitation.send_email()` (called from `InvitationView.post(action='resend')` at line 282 and from admin invite-create flows in `weblate/wladmin/views.py` + `weblate/trans/views/acl.py`) | `weblate/weblate/auth/models.py:2034-2056` |
+| capability build     | UUID4 primary key on `Invitation` model (`models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)`) | `weblate/weblate/auth/models.py:1951` |
+| URL construction     | `reverse("invitation", kwargs={"pk": self.uuid})`                                                | `weblate/weblate/auth/models.py:2018-2019` |
+| delivery             | `send_notification_email(..., "invite", context={"invitation": self, ...})`                       | `weblate/weblate/auth/models.py:2049-2056` |
+| H2 (verifier)        | `InvitationView(DetailView)` — `@method_decorator(login_not_required, name="dispatch")` at class level; verifies via `DetailView.get_object()` → `Invitation.objects.get(pk=<uuid>)` | `weblate/weblate/auth/views.py:209-259` |
+| expiry check         | `Invitation.is_expired()` — timedelta against `settings.AUTH_TOKEN_VALID`                        | `weblate/weblate/auth/models.py:2021-2024` |
+| route wiring         | path-name `"invitation"` registered via `InvitationView.as_view()`                               | `weblate/weblate/accounts/urls.py:98` |
+
+**The novel structural signal.** `@login_not_required` (Django 5.1+) is a class-level, purposeful, declarative opt-out from `LOGIN_REQUIRED_MIDDLEWARE`. It's the most explicit *"no session consulted here"* marker any of the four repos has. A `utils.pl` recognizer for this pattern is a single-fact match:
+
+```prolog
+utils_pre_auth_by_login_not_required_decorator(ViewClass) :-
+    kb_class_decorator_call(ViewClass, 'django.contrib.auth.decorators.login_not_required').
+```
+
+Combined with a capability-shape lookup in the class body (a `Model.objects.get(pk=<param>)` call where the pk argument flows from a request path parameter), that's a full bucket-C H2 recognizer with **no dataflow needed**. Cheapest H2 detection path in the evidence base — directly relevant to the recognizer-widening work in [`AUTH_POST_RECALL_GAPS.md`](AUTH_POST_RECALL_GAPS.md) root cause #1.
+
+**Q&A ammo layer 3 — Weblate defends against the pair-scope bug in code.** Same class of concern as gitea's maintainer-prose defense (§5.8's Q&A ammo bullet), but Weblate handles it in *actual flow control*:
+
+```221:245:c:\Users\tuna_\GitHub\weblate\weblate\auth\views.py
+if request.user.is_authenticated:
+    request.session.pop("invitation_link", None)
+    if not self.object.matches_user(request.user):
+        messages.error(
+            request,
+            gettext(
+                "This invitation can be accepted only by the e-mail address "
+                "chosen by the inviter; it can't be used by your account."
+            ),
+        )
+        return redirect_param("profile", "#account")
+    return None
+```
+
+**Three independent security-conscious open-source projects** now form a Q&A pattern:
+
+- **formbricks** *fixed* the pair-scope bug after disclosure (§5.5).
+- **gitea** *documents* it in a prose comment (§5.8).
+- **weblate** *handles* it in flow control (§5.10).
+
+Deck-facing framing: *"we're not inventing this class of bug — we're inventing the analyzer that finds it before the maintainers have to."*
+
+**Framework invariance across §5.5 + §5.8 + §5.9 + §5.10.** Four languages (TS / Go / PHP / Python), four framework families (Next.js App Router / Gitea chi-derived / Concrete CMS single-page / Django `DetailView`), five capability mechanisms (form-field HMAC / JWT / URL-query HMAC / opaque 64-char string / UUID4), two delivery channels (HTTP response body / email), four pre-auth-signaling idioms (dataflow-derived / call-graph-derived / attribute + dataflow / declarative decorator). **Same shape.** The invariant that survives every instance remains *H1's code constructs a URL literal that resolves to H2 and binds a capability*.
+
+### 5.11 formbricks — Bulk contacts PUT (opening demo endpoint)
+
+Chosen 2026-09-18 as the **opening pedagogical demo endpoint** — the CWE-22 seed vuln (§5.5) remains the finale. Selected after evaluating endpoint #11 (`/organizations/[organizationId]/users` — the first candidate) and finding its two SQL sinks are trivially tier-1-cleared, too shallow a story for the coarse-to-fine narrative. This endpoint exercises **both tier-1 and tier-2 clearance predicates productively on one handler**, closing the demo loop with no tier-3 (DF) invocation.
+
+- **Route:** `PUT /api/v2/management/contacts/bulk`
+- **Handler:** `formbricks/apps/web/modules/ee/contacts/api/v2/management/contacts/bulk/route.ts:9`
+- **Helper (transitive dispatch):** `formbricks/apps/web/modules/ee/contacts/api/v2/management/contacts/bulk/lib/contact.ts` (function `upsertBulkContacts`)
+- **Recognizer note:** verb is **PUT**, not POST — absent from [`tests/expected/facts/formbricks/post_endpoints.txt`](../tests/expected/facts/formbricks/post_endpoints.txt) snapshot; surfaces only after the Assignment 1 recognizer (§14) widens beyond POST.
+
+**Full inventory: 6 Prisma sinks reachable from PUT via `upsertBulkContacts`:**
+
+| # | Line | Sink call | Family | Tier-1 clears? |
+|---|---:|---|---|---|
+| 1 | 45 | `prisma.contactAttribute.findMany` | Prisma object-form | ✓ |
+| 2 | 60 | `prisma.contact.findMany` | Prisma object-form | ✓ |
+| 3 | 83 | `prisma.contactAttributeKey.findMany` | Prisma object-form | ✓ |
+| 4 | 304 | `tx.contact.createMany` | Prisma object-form | ✓ |
+| 5 | 274 | `tx.$queryRaw` INSERT `ContactAttributeKey` | Prisma raw-tagged | ✗ needs tier-2 |
+| 6 | 342 | `tx.$executeRaw` INSERT `ContactAttribute` | Prisma raw-tagged | ✗ needs tier-2 |
+
+(Line 229 `prisma.$transaction([...])` is a batching wrapper, not a sink — captured but classified as `prisma_batching_wrapper` in the taxonomy.)
+
+**Tier-2 zoom-in on the 2 raw-tagged residues:** every `${...}` interpolation is `Prisma.sql`-wrapped; no `Prisma.raw(...)` appears anywhere. Prisma parameterizes all interpolations by construction (even nested inside `Prisma.sql\`...\`` — array elements become individual bind parameters). Purely local AST inspection at each sink site clears both — **no DF invocation anywhere in the analysis**.
+
+**Complete analytical pipeline on this endpoint — zero dataflow:**
+
+1. **CF-reach**: `PUT` → *[HOC-recognizer shortcut, Assignment 1]* → handler lambda → `upsertBulkContacts` → 6 sink call sites.
+2. **Tier-1 categorical** (`sink_family_safe(_, prisma_object_form)`): clears 4 of 6 in one predicate.
+3. **Tier-2 structural** (`sink_family_safe(_, prisma_raw_tagged_no_raw_interpolation)`): clears both residues.
+4. **Verdict:** safe. Endpoint evicted from the queue.
+
+**Why this endpoint over the seed vuln for the OPENING slot** (both stay in the deck, different narrative purpose):
+
+- The seed vuln (§5.5) demonstrates bucket-C pair-vertex discovery — H2 (byte-sink) surfaces via H1's URL emission. That's the finale beat.
+- This endpoint demonstrates the *coarse-to-fine loop itself* — tier-1 + tier-2 firing productively on the same endpoint, both clearing the residue, no vuln to reveal. Pure workflow demonstration.
+- Honesty payoff: *"the first candidate we look at turns out safe. The workflow correctly clears it. That's not a limitation — it's the point of the whole talk. Not every candidate is a vuln, and correct 'safe, move on' is a first-class capability."*
+
+**Recognizer meta-story worth pinning** (see also `AUTH_POST_RECALL_GAPS.md` root cause #1): the endpoint uses `authenticatedApiClient({handler: ...})` — the HOC-wrapper pattern that today's recognizer doesn't unwrap. Under Assignment 1 (§14) the recognizer widens generically for any HOC-shape entry-point export across all HTTP verbs; this endpoint appears in the enumeration as a byproduct of that widening. The auth classification is separately handled by another catalog (out of scope for the opening demo); this endpoint stays labeled pre-auth after Assignment 1 lands, which is a *severity-mislabel only, conservative direction* — acceptable for the research talk framing (see §14 "known limits").
+
+**Full engineering prerequisites (§14):**
+- Assignment 1 (generic HOC recognizer) — enumerates the PUT verb.
+- Assignment 3 (bounded CF-reach as kbapi predicate) — the query the LLM fires.
+- Assignment 4 (sink-family hierarchy `sql`/`sql_prisma`/`sql_prisma_object_form`/`sql_prisma_raw_form` + tier-1/tier-2 clearance predicates) — closes the loop.
+- Assignment 2 (Prisma DB-call capture, including `tx.<model>.<op>` inside `$transaction` callbacks) — DEFERRED, needs chat before scoping. Without it, 4 of the 6 sinks are invisible to Assignment 4's classifier.
 
 **Important correction (was in last year's deck):** Java is **not** in the frontends list. Swap the Java logo → YAML (real, in-proc support).
 
@@ -552,6 +734,10 @@ Ranked roughly by memorability. Pick 3–4 to actually memorize; the rest are sa
 - **2026-09-12** — Added §10 "Next Session — Live Go Example Hunt" to make the handoff to a fresh session explicit. Renumbered Change Log → §11. Next session's task: pick 1–2 real-world Go snippets that demonstrate structural static interface satisfaction, for Slide 12.
 - **2026-09-14** — Landed [PR #65](https://github.com/OrenGitHub/dhscanner.runner/pull/65) (2×2 grid + `AuthEvidence` tagged union pipeline: kbapi 1.0.7 + queryengine 1.0.53).
 - **2026-09-15** — Landed [PR #66](https://github.com/OrenGitHub/dhscanner.runner/pull/66) (round-1 recon widening: removed tier-1 name catalogs → `:- dynamic` decls, widened Next.js POST recognizer to accept `'req'|'request'` + `NextRequest|nodejs.Request`, queryengine 1.0.54). Delta on `formbricks` v3.16.0: unauth POST 2 → 18, auth POST 1 → 2 (100% precision on both). Snapshot-tested in CI against [`tests/expected/facts/formbricks/post_endpoints.txt`](../tests/expected/facts/formbricks/post_endpoints.txt). Dockerfile apt-race fix bundled to stabilize queryengine CI.
+- **2026-09-16** — Formalized the endpoint taxonomy as **three-way** (pre-auth / authenticated / capability-verified) — new §4.8 with *provenance of the gate token* as the dividing line between B and C, and bucket C deliberately excluded from first-pass enumeration. Added §5.8 (gitea LFS + Actions v4 as two independent cross-repo instances of the H1↔H2 pair pattern, plus a maintainer-comment "capability scope" prose citation for Q&A). Added §13 (bucket C plan — queue-dynamics story, coarse-to-fine framing with the CF-reach/DF split justification and call-graph soundness caveat, `precompute-at-kbgen` design constraint, three API adds, signal-value ranking with the response-status-vocabulary 2×2, and the naming caveat that "capability-verified" is a placeholder). Cross-link bullet added to §5.5. Next session's task: sketch `utils_capability_verifier_call/2` end-to-end.
+- **2026-09-16** (2nd) — Extended bucket C evidence to a **third language** — added §5.9 (concretecms password-reset + email-verification pairs using stateful DB-backed `ValidationHash` tokens delivered via email — two orthogonal variations from §5.8 that widen the concept). §4.8's definition rewording drops the "signed" adjective (*possession-of-**token**-issued-by-another-endpoint*) and adds two named dimensions of bucket-C variation: **capability mechanism** (crypto vs opaque) and **delivery channel** (HTTP-body vs email). §13's `capabilityShape` enum extended with `OpaqueDbToken`; new `deliveryChannel` field added to `emitsCapabilityToHandler`. Framework-invariance evidence now stands at **three languages / three routers / four capability mechanisms / two delivery channels** across four independent H1↔H2 pair instances.
+- **2026-09-16** (3rd) — **Fourth-language** bucket-C evidence — added §5.10 (weblate invitation flow using UUID4 capabilities delivered via email, verified by `InvitationView(DetailView)` decorated with Django 5.1+ `@login_not_required`). §4.8 extended from two to **three dimensions of variation** with a new **pre-auth-signaling-idiom** axis (dataflow-derived / call-graph-derived / attribute + dataflow / **declarative decorator**). Weblate's `@login_not_required` is the cheapest H2 signal in the evidence base — one class-decorator lookup, no dataflow — and directly informs the recognizer-widening work in `AUTH_POST_RECALL_GAPS.md` root cause #1. Framework-invariance now stands at **four languages / four framework families / five capability mechanisms / two delivery channels / four pre-auth-signaling idioms** across five independent H1↔H2 pair instances. Q&A layer 3 added: three independent open-source projects (formbricks / gitea / weblate) each defend against the pair-scope bug in different ways (fix / prose comment / flow control).
+- **2026-09-18** — Deep session on demo-endpoint selection and the coarse-to-fine loop's concrete engineering. Selected §5.11 opening act (`PUT /contacts/bulk`) after evaluating endpoint #11 (`/organizations/[organizationId]/users`) and finding its two SQL sinks trivially tier-1-cleared. Endpoint #18 exercises **both tier-1 and tier-2 productively** with 6 Prisma sinks (4 object-form + 2 raw-tagged, all safe by structural inspection — no DF invoked). Added §5.11 (full sink inventory + clearance chain), §14 (four assignments — HOC recognizer, bounded CF-reach kbapi predicate, sink-family hierarchy; Assignment 2 for `tx.*` inside `$transaction` deferred), and updated Slide 18 in §3 to reflect the two-part demo structure (opening act = workflow, finale = finding). Crystallised the **pattern-directed shortcut heuristic** that unlocks Assignment 1 — recognise the *outer framework idiom* at caller-side syntactic shape (`export const <VERB> = async (req) => <ANY-CALLEE>(<dict-literal-with-callable>)`), skip HOF flow through wrapper internals. Legitimacy: industry-standard SAST convention (Semgrep, CodeQL, Datadog all cheat the same way). Four known-limit categories framed as *"community-fixable modular gaps"* for the research-talk narrative. `AUTH_POST_RECALL_GAPS.md` root cause #1 updated to reflect the generic-pattern approach + verb widening across all HTTP methods (was originally scoped as `authenticatedApiClient`-specific).
 
 ---
 
@@ -603,3 +789,239 @@ The AuthEvidence tagged union pattern is the template: each query emits **eviden
 - [ ] Whether to gate round-2 queries on **HOC-unwrap** landing first (would give us realistic auth bucket sizes) or ship round-2 first and let HOC-unwrap expand the input set later.
 
 - **2026-09-15** — Added §12 "Next Session — Round-2 Queries" with the 7-query catalog, the leaf-add shipping pattern, and the bootstrap prompt for the fresh session. Round-1 recon considered complete; next session's task: pick query #1 (`reaches_sql_sink`) and ship it end-to-end.
+
+---
+
+## 13. Next Session — Bucket C (capability-verified endpoints)
+
+**Where we left off.** §12 (Round-2 queries) implicitly assumed the 2×2 grid `{auth, pre-auth} × {GET, POST}` was the full first-pass endpoint surface. Session 2026-09-16 expanded the taxonomy to **three buckets** (formalized in §4.8): pre-auth (A), authenticated (B), and **capability-verified (C)**. Bucket C is a categorically distinct gate class whose authenticator is *another endpoint in the same codebase* — not middleware, not a session store, not an out-of-band credential. It's the gate type on the byte-sink side of the H1/H2 vulnerability class from [`demo/formbricks.md`](../demo/formbricks.md) (see §5.5), and it recurs cleanly in two independent gitea subsystems (§5.8).
+
+**The framing.** Bucket C is deliberately **excluded from the first-pass endpoint enumeration**. Analyzing a C endpoint in isolation is meaningless — its input surface (the capability) is not attacker-controlled unless its pair has a bug — and surfacing it in the first pass only generates noise. C endpoints enter the LLM's queue **as pair-vertices**, when some already-explored H1's response URL literal KB-resolves to them. The queue therefore grows *monotonically as cross-endpoint pair edges are discovered*, never as re-scoring shuffles it — pure BFS semantics on a graph that grows during traversal.
+
+### Queue-dynamics story (slide-ready)
+
+| turn | agent action | H2 status |
+|---:|---|---|
+| 1     | *2×2 grid: A ∪ B, {GET, POST}*                                                        | **not in the set** |
+| 2     | *Triage A ∪ B by URL + path params + handler complexity + response status vocabulary* | absent |
+| 3     | *CF-reach screen on shortlist*                                                        | absent |
+| 4–N   | *Fine-pass DF on top candidates*                                                      | absent |
+| N+1   | *Cross-endpoint URL-emission signal on H1 resolves to a C-bucket handler*             | **enters queue, already annotated as "paired with H1"** |
+| N+2   | *DF over the H1↔H2 pair — does the same field cross unnormalized?*                    | **CVE confirmed** |
+
+Turn N+1 is the load-bearing beat. Not *"the endpoint we skipped got rescued"* — but *"the endpoint that wasn't in the first-pass set became reachable through a pair edge."* Different mechanism, cleaner story, and it justifies bucket C's exclusion as a design property, not an accident.
+
+### Coarse-to-fine framing (control-flow shortlist → dataflow citation)
+
+Underlying algorithm story that makes bucket C's design coherent with the runtime budget:
+
+- **CF-reach is the shortlist; DF is the citation.** CF-reach is a *sound over-approximation* of DF-reach given a sound call graph — no false negatives from the filter. Perfect for triage.
+- **Two design decisions, two justifications.** Intra-proc DF is precomputed eagerly because DF edges ≫ CF edges within a procedure (3–10× in practice). Inter-proc DF is stitched lazily in Prolog because the supergraph is combinatorially expensive to materialize *and* most (source, sink) pairs are never queried. **Sparsity of demand** — not density of edges — is what makes lazy right for inter-proc. Don't bundle both under one "cheaper" argument; the pushback lands otherwise.
+- **Soundness caveat that helps you:** the sound over-approximation is exactly what makes the shortlist safe.
+- **Soundness caveat that should be said first, before Q&A finds it:** CF-reach is only as sound as the call graph. HOC-unwrap (root cause #1 in [`AUTH_POST_RECALL_GAPS.md`](AUTH_POST_RECALL_GAPS.md)) matters for the soundness of **every** downstream CF-reach filter, not just for the auth-bucket recall count. Frame HOC-unwrap on the slide as *"we widen the call graph so the cheap screen stays sound."*
+
+### The design constraint the story reveals
+
+**Every primitive that flips priority mid-exploration has to be cheap enough to precompute at kbgen time.** If the cross-endpoint URL-emission signal cost as much as full DF, the agent would never fire it inside the time budget and H2 would stay buried forever. So "response URL literal + KB-resolves-to-handler" has to be a **kbgen-time fact**, essentially free at query time. Same discipline as intra-proc DF summaries, applied to a different edge kind. Direct tie-back to [`GOAL.md`](GOAL.md)'s *"meaningful prioritization is only possible if every query respects a configurable upper time bound"* — the coarse pass isn't cheap by accident, it's cheap **by contract**.
+
+### API additions (three leaf-shaped adds, same shipping pattern as §12)
+
+1. **New KB primitive** — `utils_capability_verifier_call/2` in [`utils.pl`](../dhscanner.core/dhscanner.service.queryengine/utils.pl). A call that verifies a cryptographic assertion *without* consulting session/cookie/live-user state (HMAC compare, JWT parse against a shared secret, signed-URL sig check, expiry check). Distinguished from the existing auth catalog by the **absence** of session/identity coupling — same shape that already separates B from A, extended one step further.
+2. **New kbapi query variant** — `CapabilityVerifiedHttpPostHandlerRequestObject` (and its GET twin) alongside `Authenticated…` and `Unauthenticated…`. **Critically: this query is *not* fired in the first-pass grid.** It's fired implicitly, as the resolution target of the cross-endpoint URL-pairing query on H1.
+3. **New field on H1's endpoint record** — `emitsCapabilityToHandler: [{handler: <H2>, capabilityShape: 'JWT' | 'URLQueryHMAC' | 'FormFieldHMAC' | 'OpaqueDbToken', deliveryChannel: 'HttpResponse' | 'Email' | 'Unknown', boundFields: ['fileName','oid']}]`. This is what puts H2 on the queue as a pair-vertex, with the pairing metadata already attached — no separate re-derivation step. **The `capabilityShape` enum spans crypto and non-crypto mechanisms** (see §5.9 for the opaque DB-token case); **the `deliveryChannel` distinguishes HTTP-body from out-of-band** — the latter typically indicates account-recovery flows, which are high-value attack targets with different threat models than machine-to-machine upload flows.
+
+### Signal-value ranking (crystallized in same session — for slide phasing)
+
+Endpoint-record fields a good triage agent wants, ranked by decision-value:
+
+- **Phase 2 (triage within the first-pass A ∪ B set):** URL decomposition (verb-hidden-in-noun; `/management/` in pre-auth bucket = red flag; version drift; `/(internal)/`; `/ee/`); path params → IDOR fuel; **handler complexity** (LOC / branch count / methods-in-file) — framed as a *heuristic prior*, not a signal; **response HTTP status vocabulary** (401 present/absent) — with a 2×2 asymmetry that lets the agent self-audit its own bucket label:
+
+  |                        | handler emits 401  | handler never emits 401 |
+  |------------------------|--------------------|-------------------------|
+  | label = **pre-auth**   | **contradiction — re-examine** | consistent |
+  | label = **auth**       | consistent         | **suspicious — failing open or middleware-gated** |
+
+- **Phase 3 (cross-endpoint):** sinks reached transitively (with **explicit empty-list contract** — "we looked, nothing there"); and **response-URL literals + KB-resolves-to-handler pairing** — the two fields that create bucket C's discovery edges.
+
+Narrative choice for the demo: introduce endpoint **#11 `/organizations/[organizationId]/users`** (from [`tests/expected/facts/formbricks/post_endpoints.txt`](../tests/expected/facts/formbricks/post_endpoints.txt)) as the *first-picked* endpoint — its shape (management-shaped + `[organizationId]` path param + wrong bucket) demonstrates the reasoning framework generically, whereas picking `/storage/local` first would compress into *"we picked the vuln because it was the vuln."* The formbricks CWE-22 seed then arrives naturally at turn N+1 as the pair-vertex bucket C discovers.
+
+### Cross-repo evidence for the pattern's generality
+
+§5.8 documents two independent gitea instances (LFS + Actions v4) of the exact same H1↔H2 pattern, using two different signing mechanisms. Combined with formbricks §5.5, that's **three data points across two independent repos, three languages/routers, three capability formats**. Framework-invariance thesis (§4.2) validated cleanly for bucket C.
+
+### Open decisions for bucket C
+
+- [ ] **Better name than "capability-verified"** — current term is a placeholder. Candidates: *delegated-authority*, *signed-handoff*, *pair-authorized*, *capability-gated*. Whatever we pick must survive both `utils.pl` clause names *and* a slide bullet.
+- [ ] Should bucket C get its own **CI snapshot** (`tests/expected/facts/formbricks/capability_verified_endpoints.txt`) analogous to the round-1 POST snapshot, or is it only meaningful as a *derived* set surfaced through H1 pair-resolution?
+- [ ] Should `emitsCapabilityToHandler` be a **new kbgen-emitted fact** (cheaper at query time) or a **`utils.pl` derivation** over existing `kb_call_resolved` + `kb_const_string` + `kb_returned_from` facts (leaf add with no kbgen touch)?
+- [ ] Does the capability-verifier detector go **conservative** (only fires on well-known HMAC/JWT library APIs) or **structural** (fires on any "extract signed field from request → `hmac.Equal(...)` / `jwt.Parse` shape")? Precision-vs-recall tradeoff, same shape as `AuthEvidence` — probably wants its own evidence-tag sum type (`ByJWTVerify`, `ByHmacEqualOnQueryParams`, `ByFormFieldHmacCheck`, …).
+
+### Bootstrap prompt for the fresh session (paste at top of new chat)
+
+> *"I'm continuing the `dhscanner` OWASP-IL 2026 work. Please read `docs/OWASP26_NOTES.md` §4.8 (endpoint taxonomy), §5.5 (formbricks CWE-22 seed vuln), §5.8 (gitea capability-verifier evidence), and §13 (bucket C plan). Also skim `demo/formbricks.md` for the H1↔H2 seed vuln that motivates the whole bucket. Round-1 recon (§12) is landed. Next task: sketch the `utils_capability_verifier_call/2` predicate in `utils.pl` on top of existing kbapi primitives, then a matching `emitsCapabilityToHandler` field on H1's endpoint record. Use the leaf-add shipping pattern from §12 (kbapi type + queryengine handler + CI snapshot). Skip the naming decision for now — placeholder is fine."*
+
+- **2026-09-16** — Added §13 "Next Session — Bucket C (capability-verified endpoints)" with the three-way endpoint taxonomy (persisted separately as §4.8), the queue-dynamics story (H2 enters as pair-vertex, not by re-scoring), the coarse-to-fine framing (CF-reach shortlist → DF citation, with two-decisions-two-justifications and the call-graph soundness caveat), the *precompute-at-kbgen* design constraint, three API adds (`utils_capability_verifier_call/2` + `CapabilityVerifiedHttpPostHandlerRequestObject` variant + `emitsCapabilityToHandler` field on H1), and the signal-value ranking with the response-status-vocabulary 2×2. Cross-repo evidence persisted as §5.8 (gitea LFS + Actions v4). Next session's task: sketch `utils_capability_verifier_call/2` end-to-end.
+
+---
+
+## 14. Next Session(s) — HOC Recognizer, Bounded CF-Reach, Sink-Family Hierarchy
+
+**Where we left off.** Session 2026-09-18 designed the concrete engineering path to make the *opening* demo endpoint (§5.11 — formbricks bulk PUT `/contacts/bulk`) enumerable, queryable, and clearable end-to-end. The seed vuln (§5.5 / §13) remains the finale; this section covers the workflow-demonstration act that precedes it. Four assignments identified; three fully-scoped (1, 3, 4); one deferred pending further chat (2).
+
+The session also crystallised **the heuristic that unlocks everything** — a pattern-directed shortcut for wrapper-defined HTTP handlers that skips general higher-order-function analysis in favour of caller-side syntactic recognition. This is industry-standard SAST convention (Semgrep, CodeQL, Datadog, Snyk, Fluid, Checkmarx all do the same) and is the *why* behind Assignment 1's design.
+
+### The heuristic — pattern-directed shortcut recognition
+
+**The problem it solves.** Under standard nested-lambda modeling, the exported `PUT`'s procedure node has exactly one outgoing call-graph edge (to the HOC wrapper). The user's handler lambda is a *value* passed into the wrapper's config-object argument, not a callee reached by any edge. Sound HOF flow through the wrapper chain (through `apiWrapper` → destructured `handler` param → dispatched at `api-wrapper.ts:115`) requires inter-procedural parameter-flow + dict-property-lookup + destructuring analysis. Untractable at scale, and unnecessary when the framework idiom is stable.
+
+**The shortcut.** Recognise the *outer framework idiom* at its caller-side syntactic shape:
+```
+export const <VERB> = async (req) => <ANY-CALLEE>(<dict-literal-with-any-callable-field>)
+```
+Synthesise a call-graph edge from the top-level `<VERB>` export directly to the body of any callable found inside the dict-literal argument. Skip the wrapper's internals entirely.
+
+**Legitimacy.** This is the design every mature SAST uses — nobody does general HOF flow through arbitrary wrapper chains. Framework conventions are stable enough to encode at the caller-side pattern layer. The failure mode when the framework changes its API is obvious (no endpoints found), which is a healthy signal.
+
+**Known limits (all bounded, all research-talk-honest, all invite-contribution shaped):**
+
+| # | Limit | Consequence | Frame for the talk |
+|---|---|---|---|
+| A | Over-approximation when the dict contains *multiple* callables, not all dispatched | Not present in formbricks (single `handler:` field per config) | Skip for the corpus; refine to conventional-key-name lookup (`handler`, `execute`, `run`, `POST`, `GET`) if it appears elsewhere |
+| B | Under-approximation when the handler is a variable reference / function composition / spread source | Not present in formbricks (direct inline arrows everywhere) | Skip for the corpus |
+| C | Auth classification is skipped — endpoint stays labeled pre-auth even when the HOC enforces auth | Severity-mislabel only (**conservative direction: overstates, not understates**); finding validity preserved | Include as *"modular gap the community can contribute"* — orthogonal recognizer catalog of auth-enforcing HOC names |
+| D | Handler args are pre-processed (Zod-`safeParse`d) inside the wrapper — the lambda's `parsedInput.body.<field>` isn't the raw request body | Matters for DF/taint (Zod as first-line sanitizer, taint-source refinement); irrelevant for CF-reach | Include as *"downstream DF layer will consume Zod schemas as taint-source declarations"* — future work |
+
+### Assignment 1 — Generic HOC-shape HTTP handler recognizer
+
+**Scope:** Prolog only in [`utils.pl`](../dhscanner.core/dhscanner.service.queryengine/utils.pl). AST already preserves the shape; the parser needs no changes. Complex semantic recognition is Prolog's job.
+
+**Pattern:** as described above — generic outer syntax, no HOC-name catalog, all HTTP verbs `{GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS}`.
+
+**Action:** synthesise a call-graph edge from the `<VERB>` export to every callable value inside the dict-literal argument.
+
+**Success criteria:**
+
+1. `PUT` and other non-POST verbs enumerated alongside `POST` in the existing 2×2 grid infrastructure.
+2. Endpoint #18 — `PUT /contacts/bulk` — appears in the enumeration (see §5.11).
+3. The 18-entry pre-auth-POST snapshot in [`tests/expected/facts/formbricks/post_endpoints.txt`](../tests/expected/facts/formbricks/post_endpoints.txt) preserved or expanded (regression check — no drops).
+4. Snapshot for the newly-widened verbs added: e.g. `tests/expected/facts/formbricks/put_endpoints.txt`, deliberate diff-audit protocol per the header of the existing POST snapshot.
+
+**Cross-reference:** [`AUTH_POST_RECALL_GAPS.md`](AUTH_POST_RECALL_GAPS.md) root cause #1 — this assignment is the concrete implementation of that fix, redesigned around today's generic-pattern decision (was originally scoped as a named-catalog fix for `authenticatedApiClient`).
+
+### Assignment 3 — Bounded CF-reach as a new kbapi predicate
+
+**Scope:** Prolog predicate in `utils.pl` **plus** new Haskell type in [`dhscanner.packages/dhscanner.kbapi`](../dhscanner.packages/dhscanner.kbapi) alongside the existing two predicates (currently exposes `AuthenticatedHttpXxxHandlerRequestObject` and `UnauthenticatedHttpXxxHandlerRequestObject`), **plus** a matching queryengine handler + Prolog template.
+
+**Query shape — both endpoints fixed, no transitive-closure enumeration:**
+```prolog
+cf_reaches(+EntryPoint, +SinkSite).
+```
+
+- Both `+EntryPoint` and `+SinkSite` are ground on entry — bounds the search naturally by query shape.
+- BFS on the call graph with a **hop-count cap** (proposed default: 20; tunable per-query if a future consumer needs different limits).
+- Returns success/failure only — no path witness needed for the demo's use case (path reconstruction is out of scope; can be added later if a consumer requires it).
+- Composes with Assignment 1's synthesised HOC-shortcut edges — the recognized handler lambda is the *effective* entry point for CF-reach purposes.
+
+**Success criteria:**
+
+1. `cf_reaches` fires from `PUT /contacts/bulk` (post-Assignment-1 entry point) to each of the 6 Prisma sink sites in §5.11's table.
+2. Exposed as a new kbapi query variant.
+3. Respects the queryengine's per-query time budget from [`docs/GOAL.md`](GOAL.md).
+4. Regression-test on formbricks KB: known-negative pairs return failure within the hop cap.
+
+### Assignment 4 — Sink-family hierarchy predicates
+
+**Scope:** Prolog only in `utils.pl`. Layered ontology per the design chat 2026-09-18:
+
+```prolog
+%% ---- top layer: sink categories the LLM asks about ----
+sql(Site) :- sql_prisma(Site).
+%% future: sql(Site) :- sql_sqlalchemy(Site). sql_activerecord(Site). etc.
+
+%% ---- mid layer: per-ORM/driver family ----
+sql_prisma(Site) :- sql_prisma_object_form(Site).
+sql_prisma(Site) :- sql_prisma_raw_form(Site).
+
+%% ---- bottom layer: DB-interaction name lookup tables ----
+sql_prisma_object_form(Site) :-
+    kb_call_resolved(Site, Name),
+    prisma_object_form_name(Name).
+
+prisma_object_form_name("prisma.<model>.findMany").
+prisma_object_form_name("prisma.<model>.findUnique").
+prisma_object_form_name("prisma.<model>.findFirst").
+prisma_object_form_name("prisma.<model>.create").
+prisma_object_form_name("prisma.<model>.createMany").
+prisma_object_form_name("prisma.<model>.update").
+prisma_object_form_name("prisma.<model>.updateMany").
+prisma_object_form_name("prisma.<model>.upsert").
+prisma_object_form_name("prisma.<model>.delete").
+prisma_object_form_name("prisma.<model>.deleteMany").
+prisma_object_form_name("prisma.<model>.count").
+prisma_object_form_name("prisma.<model>.aggregate").
+prisma_object_form_name("prisma.<model>.groupBy").
+
+sql_prisma_raw_form(Site) :-
+    kb_call_resolved(Site, Name),
+    prisma_raw_form_name(Name).
+
+prisma_raw_form_name("prisma.$queryRaw").
+prisma_raw_form_name("prisma.$queryRawUnsafe").
+prisma_raw_form_name("prisma.$executeRaw").
+prisma_raw_form_name("prisma.$executeRawUnsafe").
+```
+
+**Safety predicates layer cleanly on top (tier-1 categorical + tier-2 structural):**
+```prolog
+%% tier-1: prisma object-form is safe by construction (parameterized by definition)
+sink_family_safe(Site, prisma_object_form) :-
+    sql_prisma_object_form(Site).
+
+%% tier-2: prisma raw tagged-template is safe iff no Prisma.raw(...) in interpolations
+sink_family_safe(Site, prisma_raw_tagged_no_raw_interpolation) :-
+    sql_prisma_raw_form(Site),
+    kb_call_resolved(Site, Name),
+    prisma_raw_tagged_name(Name),                    %% NOT the Unsafe variants
+    \+ interpolation_contains_prisma_raw(Site).
+
+prisma_raw_tagged_name("prisma.$queryRaw").
+prisma_raw_tagged_name("prisma.$executeRaw").
+```
+
+**Success criteria:**
+
+1. `sql/1` matches all 6 Prisma sinks reachable from `PUT /contacts/bulk` (Assignment-2-dependent for `tx.*` calls — see below).
+2. `sink_family_safe/2` classifies 4 of the 6 as `prisma_object_form` and 2 of the 6 as `prisma_raw_tagged_no_raw_interpolation`.
+3. Composed with Assignment 3's `cf_reaches`: the query *"reach any sink from `E` that is NOT `sink_family_safe`"* returns the empty residue for endpoint #18 (the "safe, move on" verdict).
+4. CI snapshot on formbricks for the composed query — locks the 4/2 split against future regressions.
+
+**Community-friendly design point.** Every layer is a plain lookup table. Adding new ORMs / drivers / sink families / safe-family instances is a PR against `utils.pl` catalog facts — no algorithm changes needed. Deck-facing framing: another instance of *silent snipes* (§4.7).
+
+### Assignment 2 — Prisma DB-call capture (DEFERRED)
+
+**Status:** deferred by user 2026-09-19 pending further chat. Persist current thinking so a later session can pick up without re-deriving.
+
+**Three sub-questions on the table:**
+
+- **Q2.1 — `tx.<model>.<op>` and `tx.$queryRaw` / `tx.$executeRaw` inside `prisma.$transaction(async (tx) => {...})` callbacks.** `tx` is a callback parameter, not the global `prisma`. Without recognition, 4 of the 6 sinks on §5.11's endpoint are invisible to Assignment 4's ontology. **This is the complicated sub-question.**
+  - **Option A — Scope-aware rewriting.** Inside a `prisma.$transaction(async (X) => {...})` callback, treat all `X.<Y>.<Z>` as `prisma.<Y>.<Z>` for classification purposes. Requires either KB-emission-time rewriting (kbgen change) or query-time Prolog scope walks over `$transaction` callback bindings.
+  - **Option B — "Cheat" (parallel spirit to Assignment 1's HOC shortcut).** Just add both `prisma.<any>.<op>` and `tx.<any>.<op>` to the family-name lookup tables in Assignment 4. Over-approximates in the theoretical case where someone names a non-Prisma variable `tx` in the same file; the convention against that is strong enough in practice that this may be acceptable for the research talk.
+  - **Discussion pending.** User note 2026-09-19: *"can't concentrate on Q2 — persist and circle back after 1+3 are implemented."*
+
+- **Q2.2 — `prisma.$transaction([...])` / `prisma.$transaction(callback)` counting.** Not a sink itself; it's a batching wrapper. Proposed: capture as a call node, tag with taxonomy fact `prisma_batching_wrapper`, keep out of `sql_prisma_*`. Small; likely uncontroversial.
+
+- **Q2.3 — `Prisma.sql` and `Prisma.raw` capture.** Needed for the tier-2 `interpolation_contains_prisma_raw/1` predicate defined in Assignment 4. Proposed: capture in the same pass; tag with taxonomy facts `prisma_sql_wrapper` (safe) and `prisma_raw_wrapper` (unsafe-parameterization-bypass). Small; likely uncontroversial.
+
+**Circle-back prompt (for the later session that picks this up):**
+
+> *"Assignment 2 (Prisma DB-call capture) was deferred on 2026-09-18. Read `docs/OWASP26_NOTES.md` §14, subsection 'Assignment 2 — DEFERRED'. Focus on Q2.1 (`tx.<...>` inside `prisma.$transaction` callbacks) — decide between Option A (scope-aware rewriting) and Option B (add both `prisma.*` and `tx.*` to the Assignment 4 lookup tables). Q2.2 and Q2.3 are likely small; scope them alongside whichever direction Q2.1 goes."*
+
+### Cross-cutting — language corpus for these sessions
+
+**JS/TS only.** Get the formbricks demo path fully working end-to-end (Assignments 1, 3, 4, then eventually 2) before porting recognizer/predicate work to the other corpus languages (Go/Gitea, Python/Weblate, PHP/Concrete-CMS + phpBB modern). The HOC-shape pattern in Assignment 1 has structural cousins in every language of the corpus (§5.10 documents the Django decorator analog; §5.8 documents Go router-registration; §5.9 documents PHP class-method dispatch), but each needs its own per-language recognizer expression.
+
+### Bootstrap prompt for the fresh session
+
+> *"I'm continuing the `dhscanner` OWASP-IL 2026 work. Please read `docs/OWASP26_NOTES.md` §5.11 (bulk PUT demo endpoint) and §14 (HOC recognizer / bounded CF-reach / sink-family hierarchy) plus `docs/AUTH_POST_RECALL_GAPS.md` root cause #1 (which today's §14 supersedes with a generic-pattern approach). Start with Assignment 1 — the generic HOC-shape recognizer in `utils.pl`. Success criteria: `PUT /contacts/bulk` appears in the enumeration alongside the existing POST snapshot, and the POST snapshot count is preserved (18) or expanded. Skip Assignment 2 (deferred). After #1 lands, proceed to Assignment 3 (bounded CF-reach kbapi predicate), then Assignment 4 (sink-family hierarchy)."*
+
+- **2026-09-18** — Added §14 "Next Session(s) — HOC Recognizer, Bounded CF-Reach, Sink-Family Hierarchy" with four assignments (three scoped, one deferred), the pattern-directed shortcut heuristic that unblocks the whole plan, four known-limit categories framed for research-talk honesty, and the sink-family predicate hierarchy sketch (top `sql` → mid `sql_prisma` → bottom `prisma_object_form_name`/`prisma_raw_form_name` lookup tables, plus tier-1/tier-2 `sink_family_safe` predicates on top). Added §5.11 documenting the opening demo endpoint (`PUT /contacts/bulk`) with its full 6-sink inventory + tier-1/tier-2 clearance chain. `AUTH_POST_RECALL_GAPS.md` root cause #1 updated in parallel to reflect the generic-pattern approach. Next session's tasks (in order): Assignment 1 → Assignment 3 → Assignment 4 → chat about Assignment 2.
