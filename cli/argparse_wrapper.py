@@ -141,11 +141,10 @@ def valid_output_file(output: str) -> pathlib.Path:
     try:
         with open(candidate, 'w', encoding='utf-8'):
             pass
-    # pylint: disable=raise-missing-from
-    except IsADirectoryError:
-        raise argparse.ArgumentTypeError(f'{candidate} is not a file ( directory given )')
-    except PermissionError:
-        raise argparse.ArgumentTypeError(f'no write permission for: {candidate}')
+    except IsADirectoryError as exc:
+        raise argparse.ArgumentTypeError(f'{candidate} is not a file ( directory given )') from exc
+    except PermissionError as exc:
+        raise argparse.ArgumentTypeError(f'no write permission for: {candidate}') from exc
 
     return candidate
 
@@ -185,9 +184,8 @@ def positive_int(raw: str) -> int:
     # turn the whole launch loop into a no-op.
     try:
         value = int(raw)
-    # pylint: disable=raise-missing-from
-    except ValueError:
-        raise argparse.ArgumentTypeError(f'not an int: {raw}')
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f'not an int: {raw}') from exc
     if value < 1:
         raise argparse.ArgumentTypeError(f'must be >= 1, got {value}')
     return value
@@ -197,9 +195,8 @@ def positive_float(raw: str) -> float:
     # Same intent as positive_int, but for the timeout/delay knobs.
     try:
         value = float(raw)
-    # pylint: disable=raise-missing-from
-    except ValueError:
-        raise argparse.ArgumentTypeError(f'not a number: {raw}')
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f'not a number: {raw}') from exc
     if value <= 0.0:
         raise argparse.ArgumentTypeError(f'must be > 0, got {value}')
     return value

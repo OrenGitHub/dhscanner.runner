@@ -2288,7 +2288,7 @@ def launch(parsed_args: CliLaunchLocalAppArgparse) -> int:
             # invalid_response) and the model-call site is the one place
             # where a transient error is cheap to surface and retry next
             # iteration. Re-raising would discard partial progress.
-            # pylint: disable=broad-except
+            # pylint: disable=broad-exception-caught
             except Exception as exc:
                 logging.error('[ launch ] openai call failed: %s', exc)
                 return 1
