@@ -1,0 +1,62 @@
+# Expected Prisma-family sink FQNs reachable, via bounded call-graph
+# closure, from the PUT handler of the OWASP-IL 2026 running-example
+# endpoint in formbricks v3.16.0 :
+#
+#     PUT /api/v2/management/contacts/bulk
+#     -> apps/web/modules/ee/contacts/api/v2/management/contacts/bulk/route.ts
+#        ( exported `PUT`, body-length 1, HOC-wrapper around
+#          `authenticatedApiClient({ handler : <lambda> })` )
+#     -> inner lambda ( request-processing body, lines 15..93 )
+#     -> upsertBulkContacts ( defined in
+#        apps/web/modules/ee/contacts/api/v2/management/contacts/bulk/lib/contact.ts
+#        lines 9..376, imported via a 1st-party cross-file edge
+#        at route.ts line 63 )
+#     -> the 4 Prisma call sites below.
+#
+# This step is the end-to-end sensor for FIVE moving parts landing
+# together on the OWASP-IL 2026 target :
+#
+#   1. parsers / TsLexer.x        : `$`-prefixed identifier lexing
+#                                   ( unblocks `$transaction` /
+#                                   `$queryRaw` / `$executeRaw` ).
+#   2. parsers / TsLexer.x +      : `LastContextualKeyword` aliasing to
+#      TsParser.y                   `OfKeyword` ( unblocks `for..of`
+#                                   loops in contact.ts ).
+#   3. parsers / TsParser.y +     : `expTaggedTemplate` with 4
+#      TsParserActions.hs           alternatives ( unblocks the raw-SQL
+#                                   tagged templates in contact.ts ).
+#   4. queryengine / utils.pl     : `utils_control_flow_reaches_sink_fqn/2`
+#                                   bounded call-graph closure with
+#                                   the three one-hop edges ( same-file
+#                                   1st-party, same-dir 1st-party,
+#                                   HOC-wrapper -> inner-handler
+#                                   unwrap ).
+#   5. queryengine / nextjs.pl    : `endpoints_hoc_dict_handler_unwrap_nextjs/2`
+#                                   -- the v2-formbricks HOC-dict walker
+#                                   that lets the closure descend from
+#                                   the exported `PUT` into the inner
+#                                   lambda where the Prisma calls live.
+#
+# If ANY of the above regresses, the diff on this snapshot fails.
+#
+# Snapshot format : one Prisma FQN per line, sorted alphabetically
+# ( matches swipl's `sort/2` deduplicated output ). `#`-comments and
+# blank lines are stripped by the test step before diffing, so authors
+# can annotate freely without breaking the diff.
+#
+# Each FQN below corresponds to ONE of the 4 fully-grounded sinks
+# ( "has a usable callee name AND arg structure AND enclosing
+# callable in the KB" ) ; see docs/OWASP26_NOTES.md for the full
+# 6-sink inventory, including the two remaining `tx.$queryRaw` /
+# `tx.$executeRaw` sites whose callee is unresolved because `tx` is
+# a `$transaction` callback parameter ( needs parameter-flow for
+# transaction callbacks -- out of scope for this snapshot ).
+#
+#   contact.ts:45  prisma.contactAttribute.findMany     ( read-phase )
+#   contact.ts:60  prisma.contact.findMany              ( read-phase )
+#   contact.ts:83  prisma.contactAttributeKey.findMany  ( read-phase )
+#   contact.ts:229 prisma.$transaction                  ( write-phase entry )
+@formbricks/database.prisma.$transaction
+@formbricks/database.prisma.contact.findMany
+@formbricks/database.prisma.contactAttribute.findMany
+@formbricks/database.prisma.contactAttributeKey.findMany

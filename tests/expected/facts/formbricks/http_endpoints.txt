@@ -77,4 +77,5 @@ PUT UNAUTH: apps/web/modules/api/v2/management/responses/[responseId]
 PUT UNAUTH: apps/web/modules/api/v2/management/webhooks/[webhookId]
 PUT UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/project-teams
 PUT UNAUTH: apps/web/modules/api/v2/organizations/[organizationId]/teams/[teamId]
+PUT UNAUTH: apps/web/modules/ee/contacts/api/v1/client/[environmentId]/contacts/[userId]/attributes
 PUT UNAUTH: apps/web/modules/ee/contacts/api/v2/management/contacts/bulk

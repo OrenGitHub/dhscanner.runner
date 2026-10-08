@@ -736,5 +736,135 @@ jobs:
           echo "PASS: 3x2 grid matches snapshot  GET ${get_unauth}/${get_auth}  POST ${post_unauth}/${post_auth}  PUT ${put_unauth}/${put_auth}  (unauth/auth)"
           rm -f http_enum_raw.log http_enum.actual http_enum.expected
 
+      - name: assert PUT /contacts/bulk reaches the 4 Prisma sinks (control-flow closure)
+        run: |
+          # Runs `utils_control_flow_reaches_sink_fqn/2` from the
+          # queryengine's utils.pl against the formbricks KB and asserts
+          # the OWASP-IL 2026 running-example PUT handler
+          # ( apps/web/modules/ee/contacts/api/v2/management/contacts/bulk )
+          # reaches EXACTLY the four fully-grounded Prisma sinks via
+          # a bounded 10-hop call-graph closure.
+          #
+          # Why this test matters :
+          #
+          #   The 3x2 grid step above only enumerates HANDLERS ( who
+          #   serves what URL ). This step is the first regression
+          #   sensor that follows a handler ALL THE WAY DOWN to its
+          #   DB sinks, through the realistic multi-hop shape v2
+          #   formbricks uses :
+          #
+          #     wrapper ( exported PUT, body=1 )
+          #       --[ HOC-dict handler unwrap ]-->
+          #     inner lambda ( request-processing body )
+          #       --[ 1st-party cross-file resolve ]-->
+          #     upsertBulkContacts ( in bulk/lib/contact.ts )
+          #       --[ direct kb_called_from + kb_call_resolved ]-->
+          #     prisma.<model>.findMany | prisma.$transaction
+          #
+          #   The utils.pl predicate wires three one-hop edges
+          #   ( defined_in_file, defined_in_dir, HOC-wrapper unwrap )
+          #   into a bounded closure ; see the predicate's doc block
+          #   for the full design.
+          #
+          # Regression sensor for FIVE moving parts landing together :
+          #
+          #   1. parsers / TsLexer.x : `$`-prefixed identifier lexing
+          #      -- without this, `$transaction` fails to tokenize
+          #      and `prisma.$transaction` is never resolved.
+          #   2. parsers / TsLexer.x + TsParser.y : LastContextualKeyword
+          #      alias for OfKeyword -- without this, `for..of` loops
+          #      in contact.ts fail to parse.
+          #   3. parsers / TsParser.y + TsParserActions.hs :
+          #      expTaggedTemplate with 4 alternatives -- without
+          #      this, the raw-SQL tagged templates in contact.ts
+          #      fail to parse and `upsertBulkContacts` is dropped.
+          #   4. queryengine / utils.pl : the three-edge call-graph
+          #      closure predicate itself ( this PR ).
+          #   5. queryengine / predicates/endpoints/nodejs/nextjs.pl :
+          #      `endpoints_hoc_dict_handler_unwrap_nextjs/2` -- the
+          #      v2-formbricks HOC-dict walker that bridges wrapper
+          #      and inner lambda.
+          #
+          # If ANY regresses, the diff below fails.
+          #
+          # Transitional note : until queryengine >= 1.0.5X-x64 ( which
+          # bakes the new `utils_control_flow_reaches_sink_fqn/2` into
+          # the image ) ships in compose.prebuilt.yaml, this step
+          # copies the SOURCE utils.pl into the queryengine container
+          # at test time and consults IT instead of `/queryengine/utils.pl`.
+          # Once the image is repinned, swap the consult target back to
+          # `/queryengine/utils.pl` and delete the `docker compose cp`
+          # line.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "copying SOURCE utils.pl into queryengine ( transitional, remove once image is repinned )"
+          $compose cp ./dhscanner.core/dhscanner.service.queryengine/utils.pl queryengine:/tmp/utils_dev.pl
+          echo "querying queryengine's swipl for Prisma FQNs reachable from the bulk PUT handler"
+          # See the "assert shape recognizer detects checkAuth" step above
+          # for the full rationale on `set_prolog_flag(character_escapes,
+          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
+          # consult sequence ; the same reasoning applies here verbatim.
+          query="consult('/tmp/utils_dev.pl'), \
+                 set_prolog_flag(character_escapes, false), \
+                 dynamic(kb_callable_returns_without_value/2), \
+                 dynamic(kb_call_1st_party_func_defined_in_file/3), \
+                 dynamic(kb_call_1st_party_func_defined_in_dir/3), \
+                 dynamic(kb_func_def/4), \
+                 dynamic(kb_called_from/2), \
+                 dynamic(kb_call_resolved/2), \
+                 dynamic(kb_callable_returns_value/2), \
+                 dynamic(kb_callable_source_body_length/2), \
+                 dynamic(kb_dataflow_edge/2), \
+                 dynamic(kb_param_i_of_callable/3), \
+                 dynamic(kb_param_has_name/2), \
+                 dynamic(kb_param_has_resolved_type/2), \
+                 dynamic(kb_arg_i_for_call/3), \
+                 dynamic(kb_const_string/2), \
+                 dynamic(kb_gated_return/2), \
+                 dynamic(kb_const_null/1), \
+                 consult('${formbricks_kb_path}'), \
+                 findall(Fqn, ( \
+                     kb_func_def(Handler, 'PUT', FN, \
+                                 'apps/web/modules/ee/contacts/api/v2/management/contacts/bulk'), \
+                     sub_atom(FN, _, _, 0, 'route.ts'), \
+                     utils_control_flow_reaches_sink_fqn(Handler, Fqn), \
+                     sub_atom(Fqn, 0, _, _, '@formbricks/database.prisma.') \
+                 ), Fqns0), \
+                 sort(Fqns0, Fqns), \
+                 forall(member(F, Fqns), format('SINK: ~w~n', [F])), \
+                 length(Fqns, N), \
+                 format('MATCH_COUNT: ~w~n', [N]), \
+                 halt(0)"
+          set +e
+          $compose exec -T queryengine swipl -g "$query" -t "halt(1)" | tee bulk_reach_raw.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: utils_control_flow_reaches_sink_fqn did not surface any Prisma sinks reachable from the bulk PUT handler"
+            exit 1
+          fi
+          # Keep only the SINK lines, strip the "SINK: " prefix, sort.
+          grep -E '^SINK: ' bulk_reach_raw.log | sed 's/^SINK: //' | sort > bulk_reach.actual
+          # Strip '#'-comments and blank lines from the expected snapshot
+          # so authors can annotate freely without breaking the diff.
+          grep -Ev '^\s*(#|$)' tests/expected/facts/formbricks/bulk_control_flow_sinks.txt | sort > bulk_reach.expected
+          echo "expected count: $(wc -l < bulk_reach.expected)"
+          echo "actual   count: $(wc -l < bulk_reach.actual)"
+          set +e
+          delta=$(diff bulk_reach.expected bulk_reach.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: Prisma-sink reachability snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          echo "PASS: bulk PUT handler reaches exactly the 4 expected Prisma sinks ( $(wc -l < bulk_reach.actual) FQNs )"
+          rm -f bulk_reach_raw.log bulk_reach.actual bulk_reach.expected
+
       - name: remove formbricks tested code
         run: rm -rf formbricks
