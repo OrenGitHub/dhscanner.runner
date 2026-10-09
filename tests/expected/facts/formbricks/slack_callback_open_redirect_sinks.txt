@@ -1,0 +1,52 @@
+# Expected Open-Redirect call sites reachable, via bounded call-graph
+# closure, from the GET handler of the Slack OAuth callback endpoint
+# in formbricks v3.16.0 :
+#
+#     GET /api/v1/integrations/slack/callback
+#     -> apps/web/app/api/v1/integrations/slack/callback/route.ts
+#        ( exported `GET = async (req: NextRequest) => { ... }`,
+#          direct handler -- no HOC wrapper )
+#     -> Response.redirect(`${WEBAPP_URL}/environments/${environmentId}/integrations/slack`)                     ( line 81 )
+#     -> Response.redirect(`${WEBAPP_URL}/environments/${environmentId}/integrations/slack?error=${error}`)      ( line 84 )
+#
+# Both URL templates interpolate the `environmentId` query-parameter
+# ( + the `error` query-parameter on the second site ) -- textbook
+# Open-Redirect ( CWE-601 ) sink shape. We do NOT taint-check the URL
+# argument in the sink predicate itself ; taint checking is downstream
+# work ( `open_redirect/1` in `utils.pl` composes the sink with
+# `dataflow_inter_path/3` ). This snapshot locks the sink-recognition
+# half of the pipeline only.
+#
+# This step is the end-to-end sensor for THREE moving parts landing
+# together on the first nodejs Open-Redirect sink :
+#
+#   1. parsers / TsParserActions.hs : `instrumentNodejsResponseType`
+#        -- the pre-existing synthetic `import { Response } from 'nodejs'`
+#        that pins the `Response` global to the FQN prefix
+#        `nodejs.Response`. Unchanged in this PR but load-bearing :
+#        without it, `Response.redirect` resolves to a bare local name
+#        and the sink predicate matches nothing.
+#   2. queryengine / predicates/sinks/open_redirects/nodejs/native.pl
+#        -- the new `sinks_open_redirect_nodejs_response_redirect/1`
+#        leaf predicate matching `kb_call_resolved(Call, 'nodejs.Response.redirect')`.
+#   3. queryengine / predicates/sinks/api.pl -- both the
+#        `:- [ 'predicates/sinks/open_redirects/nodejs/native' ]` include
+#        and the `sinks_open_redirect(Call) :- sinks_open_redirect_nodejs_response_redirect(Call)`
+#        disjunction leaf.
+#
+# If ANY of the above regresses, the diff on this snapshot fails.
+#
+# Snapshot format : one `<source-line>:<fqn>` tuple per CALL SITE,
+# sorted alphabetically. The source line is extracted at test time
+# from the kbgen call-location atom
+# ( `startloc_<L>_<C>_endloc_<L>_<C>_<encoded-file-path>` ) by
+# splitting on `_` and taking position 1 ( the start line ). Column
+# numbers are DELIBERATELY omitted : they are stable per release but
+# fragile under cosmetic edits ( whitespace, re-wrapping ) ; the LINE
+# number is the right granularity for a per-site assertion anchored
+# to a pinned release tag. `#`-comments and blank lines are stripped
+# by the test step before diffing, so authors can annotate freely
+# without breaking the diff.
+
+81:nodejs.Response.redirect
+84:nodejs.Response.redirect
