@@ -860,5 +860,253 @@ jobs:
           echo "PASS: bulk PUT handler reaches exactly the 4 expected Prisma sinks ( $(wc -l < bulk_reach.actual) FQNs )"
           rm -f bulk_reach_raw.log bulk_reach.actual bulk_reach.expected
 
+      - name: assert GET /slack/callback reaches the SSRF fetch sink (control-flow closure)
+        run: |
+          # Runs `utils_control_flow_reaches_sink_fqn/2` composed with
+          # the new `sinks_ssrf/1` disjunction from `predicates/sinks/api.pl`
+          # against the formbricks KB and asserts the Slack OAuth
+          # callback GET handler
+          # ( apps/web/app/api/v1/integrations/slack/callback )
+          # reaches EXACTLY the one `nodejs.fetch` SSRF sink via a
+          # bounded 10-hop call-graph closure. The chain is actually
+          # 1 hop ( the fetch call lives in the handler body itself
+          # at line 42 ), but we go through the same bounded-closure
+          # predicate the Prisma test uses so this step also acts as
+          # a regression sensor for `utils_control_flow_reaches_sink_fqn`.
+          #
+          # This step is the end-to-end sensor for FOUR moving parts
+          # landing together on the FIRST SSRF sink wired for nodejs :
+          #
+          #   1. parsers / TsParserActions.hs : `instrumentNodejsFetchFn`
+          #      -- synthetic `import { fetch } from 'nodejs'` prepended
+          #      to every TS file. Pins the bare WHATWG global `fetch`
+          #      to the stable FQN `nodejs.fetch` ( mirrors the existing
+          #      Request / Response / URL treatment ). Without this,
+          #      the sink predicate matches nothing.
+          #   2. queryengine / predicates/sinks/ssrf/nodejs/native.pl :
+          #      the new `sinks_ssrf_nodejs_fetch/1` leaf predicate.
+          #   3. queryengine / predicates/sinks/api.pl : both the
+          #      `:- [ 'predicates/sinks/ssrf/nodejs/native' ]` include
+          #      and the `sinks_ssrf(Call) :- sinks_ssrf_nodejs_fetch(Call)`
+          #      disjunction leaf.
+          #   4. queryengine / utils.pl :
+          #      `utils_control_flow_reaches_sink_fqn/2` ( shared with
+          #      the Prisma reach step above ).
+          #
+          # See tests/expected/facts/formbricks/slack_callback_ssrf_sinks.txt
+          # for the full snapshot ( one FQN per line, sorted ) and the
+          # per-moving-part regression rationale.
+          #
+          # See the "assert shape recognizer detects checkAuth" step
+          # above for the full rationale on `set_prolog_flag(character_
+          # escapes, false)`, `dynamic(kb_*)` declarations, and the
+          # ORDER-MATTERS consult sequence ; the same reasoning applies
+          # here verbatim.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "querying queryengine's swipl for SSRF-sink FQNs reachable from the slack-callback GET handler"
+          query="consult('/queryengine/utils.pl'), \
+                 set_prolog_flag(character_escapes, false), \
+                 dynamic(kb_callable_returns_without_value/2), \
+                 dynamic(kb_call_1st_party_func_defined_in_file/3), \
+                 dynamic(kb_call_1st_party_func_defined_in_dir/3), \
+                 dynamic(kb_func_def/4), \
+                 dynamic(kb_called_from/2), \
+                 dynamic(kb_call_resolved/2), \
+                 dynamic(kb_callable_returns_value/2), \
+                 dynamic(kb_callable_source_body_length/2), \
+                 dynamic(kb_dataflow_edge/2), \
+                 dynamic(kb_param_i_of_callable/3), \
+                 dynamic(kb_param_has_name/2), \
+                 dynamic(kb_param_has_resolved_type/2), \
+                 dynamic(kb_arg_i_for_call/3), \
+                 dynamic(kb_const_string/2), \
+                 dynamic(kb_gated_return/2), \
+                 dynamic(kb_const_null/1), \
+                 consult('${formbricks_kb_path}'), \
+                 findall(Fqn, ( \
+                     kb_func_def(Handler, 'GET', FN, \
+                                 'apps/web/app/api/v1/integrations/slack/callback'), \
+                     sub_atom(FN, _, _, 0, 'route.ts'), \
+                     utils_control_flow_reaches_sink_fqn(Handler, Fqn), \
+                     kb_call_resolved(Call, Fqn), \
+                     sinks_ssrf(Call) \
+                 ), Fqns0), \
+                 sort(Fqns0, Fqns), \
+                 forall(member(F, Fqns), format('SINK: ~w~n', [F])), \
+                 length(Fqns, N), \
+                 format('MATCH_COUNT: ~w~n', [N]), \
+                 halt(0)"
+          set +e
+          $compose exec -T queryengine swipl -g "$query" -t "halt(1)" | tee slack_ssrf_raw.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: sinks_ssrf did not surface any SSRF sinks reachable from the slack-callback GET handler"
+            exit 1
+          fi
+          # Keep only the SINK lines, strip the "SINK: " prefix, sort.
+          grep -E '^SINK: ' slack_ssrf_raw.log | sed 's/^SINK: //' | sort > slack_ssrf.actual
+          # Strip '#'-comments and blank lines from the expected snapshot
+          # so authors can annotate freely without breaking the diff.
+          grep -Ev '^\s*(#|$)' tests/expected/facts/formbricks/slack_callback_ssrf_sinks.txt | sort > slack_ssrf.expected
+          echo "expected count: $(wc -l < slack_ssrf.expected)"
+          echo "actual   count: $(wc -l < slack_ssrf.actual)"
+          set +e
+          delta=$(diff slack_ssrf.expected slack_ssrf.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: SSRF-sink reachability snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          echo "PASS: slack-callback GET handler reaches exactly the expected SSRF sink(s) ( $(wc -l < slack_ssrf.actual) FQN(s) )"
+          rm -f slack_ssrf_raw.log slack_ssrf.actual slack_ssrf.expected
+
+      - name: assert GET /slack/callback reaches BOTH open-redirect sinks (per-call-site)
+        run: |
+          # Asserts the Slack OAuth callback GET handler
+          # ( apps/web/app/api/v1/integrations/slack/callback )
+          # directly calls the `nodejs.Response.redirect` sink at BOTH
+          # expected call sites ( lines 81 and 84 of the handler body ).
+          # Uses `kb_called_from(Call, Handler)` directly ( both calls
+          # live in the handler body itself, so the control-flow closure
+          # degenerates to a one-hop edge ). The Prisma / SSRF reach
+          # tests above are the regression sensors for the deeper
+          # `utils_control_flow_reaches_sink_fqn/2` closure predicate ;
+          # this step is a focused per-call-site assertion.
+          #
+          # PER-CALL-SITE assertion ( snapshot format `<line>:<fqn>` ) :
+          # both call sites resolve to the same FQN, so a dedup-by-FQN
+          # snapshot would silently pass if we only detected one of
+          # the two. We therefore pull the SOURCE LINE out of the
+          # kbgen call-location atom
+          # ( `startloc_<L>_<C>_endloc_<L>_<C>_<encoded-file>` ) by
+          # splitting on `_` in Prolog and emitting one SINK line per
+          # distinct ( line, fqn ) tuple. Column is DELIBERATELY
+          # omitted : stable per release but fragile under cosmetic
+          # whitespace / wrapping edits. See the snapshot header for
+          # full rationale.
+          #
+          # NOT using `kb_call_resolved(Call, Fqn)` unanchored to the
+          # handler : there are OTHER `Response.redirect` sites across
+          # formbricks ( notion, airtable, google-sheet callbacks ) that
+          # also resolve to `nodejs.Response.redirect`. Anchoring Call
+          # via `kb_called_from(Call, Handler)` restricts the match to
+          # the slack handler's own body.
+          #
+          # This step is the end-to-end sensor for THREE moving parts
+          # landing together on the FIRST Open-Redirect sink wired for
+          # nodejs :
+          #
+          #   1. parsers / TsParserActions.hs : `instrumentNodejsResponseType`
+          #      -- the pre-existing synthetic `import { Response } from 'nodejs'`
+          #      pin ( unchanged in this PR but LOAD-BEARING -- without
+          #      it, `Response.redirect` resolves to a bare local name
+          #      and the sink predicate matches nothing ).
+          #   2. queryengine / predicates/sinks/open_redirects/nodejs/native.pl
+          #      -- the new `sinks_open_redirect_nodejs_response_redirect/1`
+          #      leaf predicate.
+          #   3. queryengine / predicates/sinks/api.pl -- the include
+          #      and the `sinks_open_redirect(Call) :- sinks_open_redirect_nodejs_response_redirect(Call)`
+          #      disjunction leaf.
+          #
+          # See tests/expected/facts/formbricks/slack_callback_open_redirect_sinks.txt
+          # for the snapshot header + full regression rationale.
+          #
+          # See the "assert shape recognizer detects checkAuth" step
+          # above for the full rationale on `set_prolog_flag(character_
+          # escapes, false)`, `dynamic(kb_*)` declarations, and the
+          # ORDER-MATTERS consult sequence ; the same reasoning applies
+          # here verbatim. The tornado open-redirect leaf references
+          # `kb_class_has_3rd_party_super/3` + `kb_call_method_of_class/3`
+          # which don't appear in a nodejs-only KB -- redeclaring them
+          # dynamic prevents swipl from throwing "Unknown procedure" on
+          # the `sinks_open_redirect/1` disjunction.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "querying queryengine's swipl for Open-Redirect call sites directly inside the slack-callback GET handler"
+          # The inner conjunction extracts the START LINE from the Call
+          # location atom. kbgen's format is
+          # `startloc_<L>_<C>_endloc_<L>_<C>_<encoded-file>`, so after
+          # `split_string(_, "_", "", Parts)` the start line is at
+          # position 1 ( 0-indexed ). We emit `SINK: <line>:<fqn>`
+          # per unique ( line, fqn ) tuple so the snapshot is both
+          # per-site AND stable under cosmetic whitespace / wrapping
+          # edits that would shift columns.
+          query="consult('/queryengine/utils.pl'), \
+                 set_prolog_flag(character_escapes, false), \
+                 dynamic(kb_callable_returns_without_value/2), \
+                 dynamic(kb_call_1st_party_func_defined_in_file/3), \
+                 dynamic(kb_call_1st_party_func_defined_in_dir/3), \
+                 dynamic(kb_func_def/4), \
+                 dynamic(kb_called_from/2), \
+                 dynamic(kb_call_resolved/2), \
+                 dynamic(kb_callable_returns_value/2), \
+                 dynamic(kb_callable_source_body_length/2), \
+                 dynamic(kb_dataflow_edge/2), \
+                 dynamic(kb_param_i_of_callable/3), \
+                 dynamic(kb_param_has_name/2), \
+                 dynamic(kb_param_has_resolved_type/2), \
+                 dynamic(kb_arg_i_for_call/3), \
+                 dynamic(kb_const_string/2), \
+                 dynamic(kb_gated_return/2), \
+                 dynamic(kb_const_null/1), \
+                 dynamic(kb_class_has_3rd_party_super/3), \
+                 dynamic(kb_class_has_1st_party_super/3), \
+                 dynamic(kb_class_def/3), \
+                 dynamic(kb_call_method_of_class/3), \
+                 consult('${formbricks_kb_path}'), \
+                 findall(Line-Fqn, ( \
+                     kb_func_def(Handler, 'GET', FN, \
+                                 'apps/web/app/api/v1/integrations/slack/callback'), \
+                     sub_atom(FN, _, _, 0, 'route.ts'), \
+                     kb_called_from(Call, Handler), \
+                     kb_call_resolved(Call, Fqn), \
+                     sinks_open_redirect(Call), \
+                     atom_string(Call, CallStr), \
+                     split_string(CallStr, \"_\", \"\", Parts), \
+                     nth0(1, Parts, LineStr), \
+                     number_string(Line, LineStr) \
+                 ), Pairs0), \
+                 sort(Pairs0, Pairs), \
+                 forall(member(L-F, Pairs), format('SINK: ~w:~w~n', [L, F])), \
+                 length(Pairs, N), \
+                 format('MATCH_COUNT: ~w~n', [N]), \
+                 halt(0)"
+          set +e
+          $compose exec -T queryengine swipl -g "$query" -t "halt(1)" | tee slack_or_raw.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: swipl Open-Redirect enumeration query errored"
+            exit 1
+          fi
+          # Per-call-site snapshot diff ( one `<line>:<fqn>` per site ).
+          grep -E '^SINK: ' slack_or_raw.log | sed 's/^SINK: //' | sort > slack_or.actual
+          grep -Ev '^\s*(#|$)' tests/expected/facts/formbricks/slack_callback_open_redirect_sinks.txt | sort > slack_or.expected
+          echo "expected count: $(wc -l < slack_or.expected)"
+          echo "actual   count: $(wc -l < slack_or.actual)"
+          set +e
+          delta=$(diff slack_or.expected slack_or.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: Open-Redirect per-call-site snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          echo "PASS: slack-callback GET handler reaches the expected Open-Redirect sink at $(wc -l < slack_or.actual) call site(s)"
+          rm -f slack_or_raw.log slack_or.actual slack_or.expected
+
       - name: remove formbricks tested code
         run: rm -rf formbricks

@@ -1,0 +1,54 @@
+# Expected SSRF-sink FQNs reachable, via bounded call-graph closure,
+# from the GET handler of the Slack OAuth callback endpoint in
+# formbricks v3.16.0 :
+#
+#     GET /api/v1/integrations/slack/callback
+#     -> apps/web/app/api/v1/integrations/slack/callback/route.ts
+#        ( exported `GET = async (req: NextRequest) => { ... }`,
+#          direct handler -- no HOC wrapper )
+#     -> fetch("https://slack.com/api/oauth.v2.access", { ... })
+#        ( same file, line 42, 1-hop CF-reach )
+#
+# This step is the end-to-end sensor for the FIRST SSRF sink wired
+# into the queryengine's `sinks_ssrf/1` disjunction for the nodejs
+# side. FOUR moving parts land together on it :
+#
+#   1. parsers / TsParserActions.hs : `instrumentNodejsFetchFn` --
+#        synthetic `import { fetch } from 'nodejs'` injected at the
+#        head of every TS file. Pins the FQN of the bare WHATWG
+#        global `fetch(...)` to `nodejs.fetch` ( mirrors the existing
+#        Request / Response / URL treatment in the same module ).
+#        Without this instrumentation, `fetch` resolves to
+#        `Fqn.Unknown` and never fires a `kb_call_resolved` fact
+#        matching our sink predicate.
+#   2. queryengine / predicates/sinks/ssrf/nodejs/native.pl :
+#        `sinks_ssrf_nodejs_fetch/1` -- the leaf predicate matching
+#        `kb_call_resolved(Call, 'nodejs.fetch')`.
+#   3. queryengine / predicates/sinks/api.pl : the new leaf is
+#        both consulted ( `:- [ 'predicates/sinks/ssrf/nodejs/native' ]`)
+#        and composed into the top-level disjunction
+#        ( `sinks_ssrf(Call) :- sinks_ssrf_nodejs_fetch(Call)` ).
+#   4. queryengine / utils.pl : the pre-existing
+#        `utils_control_flow_reaches_sink_fqn/2` 10-hop closure --
+#        for this endpoint the chain is trivial ( 1 hop : GET body
+#        contains the fetch call directly ) so no HOC-unwrap edge
+#        is exercised.
+#
+# If ANY of the above regresses, the diff on this snapshot fails.
+#
+# Snapshot format : one SSRF-sink FQN per line, sorted alphabetically
+# ( matches swipl's `sort/2` deduplicated output ). `#`-comments and
+# blank lines are stripped by the test step before diffing, so authors
+# can annotate freely without breaking the diff.
+#
+# Honesty note : the URL argument of the sink call is a hardcoded
+# constant ( `"https://slack.com/api/oauth.v2.access"` ), so this is
+# an SSRF sink in the STRUCTURAL sense only -- exactly how
+# `sinks_ssrf_python_requests/1` already matches every `requests.post`
+# call regardless of whether its URL is user-controlled. Taint-checking
+# the URL argument is downstream work ( `ssrf/1` in utils.pl composes
+# the sink with `dataflow_inter_path/3` ) and is intentionally out of
+# scope for this snapshot, whose purpose is to lock the sink-recognition
+# half of the pipeline on a real-world handler.
+
+nodejs.fetch
