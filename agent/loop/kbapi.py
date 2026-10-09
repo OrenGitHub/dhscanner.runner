@@ -60,7 +60,7 @@ class KbapiClient:
         unknown tag ends up on the wire the queryengine will reject
         it and we surface that rejection as a :class:`KbapiError`.
         """
-        body = {"tag": tag, "contents": contents}
+        body: dict[str, typing.Any] = {"tag": tag, "contents": contents}
         params = {"kb_location": self._kb_location}
         started = time.monotonic()
         try:

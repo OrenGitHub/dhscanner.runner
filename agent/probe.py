@@ -129,7 +129,7 @@ def _find_target(kbapi: KbapiClient, method: str, url_endswith: str) -> Endpoint
 
 def _print_endpoint(ref: EndpointRef) -> None:
     print(_BAR)
-    print(f"[probe] target endpoint on the desk:")
+    print("[probe] target endpoint on the desk:")
     print(_BAR)
     print(json.dumps(ref.model_dump(mode="json"), indent=2))
     print()
@@ -165,9 +165,9 @@ def _print_session_summary(session_result, trace_root: pathlib.Path) -> None:
             print(f"        prov    : parent={prop.provenance.parent!r} "
                   f"mechanism={prop.provenance.mechanism!r}")
 
-    print(f"\n--- trace on disk ---")
+    print("\n--- trace on disk ---")
     print(f"  {trace_root}")
-    print(f"  trace.jsonl, digest_snapshots/item_0001.json")
+    print("  trace.jsonl, digest_snapshots/item_0001.json")
 
 
 def main(argv: typing.Optional[list[str]] = None) -> int:
@@ -209,17 +209,17 @@ def main(argv: typing.Optional[list[str]] = None) -> int:
         snapshot = digest.snapshot()
         trace.digest_snapshot(item_id, snapshot)
 
-        session_kwargs: dict[str, typing.Any] = dict(
-            endpoint=endpoint,
-            history=findings.get(endpoint),
-            digest_snapshot=snapshot,
-            kbapi_client=kbapi,
-            kbapi_query_budget=args.kbapi_query_budget,
-            enqueue_budget=args.enqueue_budget,
-            wall_clock_seconds=args.wall_clock_s,
-            openai_timeout_seconds=args.openai_timeout_s,
-            trace_hook=_LiveHook(trace, item_id),
-        )
+        session_kwargs: dict[str, typing.Any] = {
+            "endpoint": endpoint,
+            "history": findings.get(endpoint),
+            "digest_snapshot": snapshot,
+            "kbapi_client": kbapi,
+            "kbapi_query_budget": args.kbapi_query_budget,
+            "enqueue_budget": args.enqueue_budget,
+            "wall_clock_seconds": args.wall_clock_s,
+            "openai_timeout_seconds": args.openai_timeout_s,
+            "trace_hook": _LiveHook(trace, item_id),
+        }
         if args.model is not None:
             session_kwargs["model"] = args.model
 
