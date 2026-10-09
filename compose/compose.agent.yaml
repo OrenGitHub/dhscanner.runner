@@ -1,0 +1,28 @@
+# Agent-mode override.
+#
+# When driving the queryengine from the host (python -m agent.loop /
+# python -m agent.explore / python -m agent.test), kbapi needs to be
+# reachable at http://localhost:3000/api. The prebuilt stack keeps
+# queryengine on the internal `dhscanner` network only; this override
+# republishes its port 3000 to the host so the python drivers can
+# connect.
+#
+# Add this file to the -f list ONLY when driving the host-side agent:
+#
+#   docker compose --env-file .env \
+#     -f compose/compose.base.yaml \
+#     -f compose/compose.app.yaml \
+#     -f compose/compose.fronts.yaml \
+#     -f compose/compose.prebuilt.yaml \
+#     -f compose/compose.workers.yaml \
+#     -f compose/compose.agent.yaml \
+#     up -d
+#
+# The non-agent production flow (python -m cli run without --with_agent)
+# does not need this file \u2014 the FastAPI app at :8000 reaches
+# queryengine through the internal compose network.
+
+services:
+  queryengine:
+    ports:
+      - "3000:3000"

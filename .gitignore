@@ -19,6 +19,19 @@ env/
 agent/.launch_logs/
 agent/.env
 
+# agent-loop runtime artefacts
+# `agent/loop` and `agent/probe` write one directory per session
+# ( `<kb>/<utc-timestamp>-<pid>/trace.jsonl` + `digest_snapshots/*.json` )
+# for post-mortem. Same reasoning as `.launch_logs/` -- useful on a
+# developer machine, never useful to ship in git.
+agent/.scan_traces/
+
+# local scan-target junctions ( `./formbricks` is a Windows
+# junction / Linux symlink to the on-disk clone used by the probe
+# driver; CI clones a fresh copy itself in `.github/workflows/tests.yaml`,
+# so there is no reason to track it ).
+/formbricks/
+
 # Compose stack secrets (APPROVED_URL_0, APPROVED_BEARER_TOKEN_0, ...).
 # docker compose auto-reads this from the working directory of the
 # `docker compose -f compose/...` invocation, which is the repo root.
