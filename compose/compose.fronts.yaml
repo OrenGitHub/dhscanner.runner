@@ -50,3 +50,10 @@ services:
       dockerfile: Dockerfile
     networks:
       - dhscanner
+
+  frontjava:
+    build:
+      context: ../dhscanner.core/dhscanner.service.fronts/java
+      dockerfile: Dockerfile
+    networks:
+      - dhscanner
