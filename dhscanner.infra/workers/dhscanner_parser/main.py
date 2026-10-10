@@ -30,6 +30,16 @@ DHSCANNER_AST_BUILDER_URL = {
     Language.RB: 'http://parsers:3000/from/rb/to/dhscanner/ast',
     Language.CS: 'http://parsers:3000/from/cs/to/dhscanner/ast',
     Language.GO: 'http://parsers:3000/from/go/to/dhscanner/ast',
+    # The parsers service hosts `/from/java/to/dhscanner/ast` as of
+    # dhscanner-parsers 1.1.25-x64, but the JavaParser.y Happy grammar
+    # is currently a minimal skeleton (program rule copied verbatim from
+    # JsParser.y, expects an esprima-shaped envelope). Until that grammar
+    # is rewritten against frontjava's `{kind, loc, text, children}` tree,
+    # every real .java file will log DHSCANNER_PARSING_FAILED at col 2-8
+    # of line 1 (the first JSON string literal). The native-parsing stage
+    # still succeeds and persists a Java AST, so once the real grammar
+    # lands every previously-failed Java file reprocesses cleanly.
+    Language.JAVA: 'http://parsers:3000/from/java/to/dhscanner/ast',
     Language.YAML: 'http://parsers:3000/from/yaml/to/dhscanner/ast',
     Language.YML: 'http://parsers:3000/from/yaml/to/dhscanner/ast',
 }
