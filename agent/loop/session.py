@@ -572,8 +572,12 @@ def _tighten_schema(node: typing.Any) -> None:
     """
     if isinstance(node, dict):
         if node.get("type") == "object":
-            if "additionalProperties" not in node:
-                node["additionalProperties"] = False
+            # Always clamp to False. OpenAI strict mode rejects any object
+            # subschema (including anyOf branches) that leaves this unset
+            # OR sets it to True; Pydantic emits True for `dict[str, Any]`
+            # fields like EndpointRef.auth_evidence, so a "set only if
+            # missing" guard would silently miss the open-map branches.
+            node["additionalProperties"] = False
             props = node.get("properties")
             if isinstance(props, dict) and props:
                 # Overwrite rather than union with existing `required`:
