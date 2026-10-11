@@ -22,6 +22,7 @@ AST_BUILDER_URL = {
     Language.RB: 'http://frontrb:3000/to/native/cruby/ast',
     Language.CS: 'http://frontcs:8080/to/native/cs/ast',
     Language.GO: 'http://frontgo:8080/to/native/go/ast',
+    Language.JAVA: 'http://frontjava:5000/to/native/java/ast',
 }
 
 @dataclasses.dataclass(frozen=True)

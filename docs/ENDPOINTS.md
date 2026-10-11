@@ -196,7 +196,7 @@ per-stage responsibilities from `ARCHITECTURE.md`:
 
 | stage | service | contribution to the endpoint layer |
 |---|---|---|
-| native front | `frontjs` / `frontts` / `frontphp` / `frontpy` / `frontrb` / `frontcs` / `frontgo` | language-native AST — must preserve class inheritance, decorators / attributes, top-level export declarations, and typed-param annotations |
+| native front | `frontjs` / `frontts` / `frontphp` / `frontpy` / `frontrb` / `frontcs` / `frontgo` / `frontjava` | language-native AST — must preserve class inheritance, decorators / attributes, top-level export declarations, and typed-param annotations |
 | dhscanner parser | `parsers` (Happy grammars in `dhscanner.core/dhscanner.service.parsers/src/*.y`) | normalizes native AST into `dhscanner.ast` — this is where `stmtClassSupers`, `stmtClassMethods`, verb-export detection etc. get carried through |
 | codegen | `codegen` | per-callable IR; also records `Callable.numOriginalSourceInstructions` used by `kb_callable_source_body_length/2` (needed by the Next.js HOC-unwrap recognizer) |
 | kbgen | `kbgen` | emits the `kb_*` facts listed in §4. **Never** emits `utils_*`. |

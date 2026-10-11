@@ -14,6 +14,7 @@ class Language(str, enum.Enum):
     RB = 'rb'
     CS = 'cs'
     GO = 'go'
+    JAVA = 'java'
     YAML = 'yaml'
     YML = 'yml'
     ALL = 'ALL'

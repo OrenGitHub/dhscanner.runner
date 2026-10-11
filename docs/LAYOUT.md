@@ -34,13 +34,14 @@ language.
 
 | service    | source (submodule path)                              | native AST endpoint                             |
 |------------|------------------------------------------------------|-------------------------------------------------|
-| `frontjs`  | `dhscanner.core/dhscanner.service.fronts/js`         | Esprima JS AST (`/to/esprima/js/ast`)           |
-| `frontts`  | `dhscanner.core/dhscanner.service.fronts/ts`         | native TS AST (`/to/native/ts/ast`)             |
-| `frontphp` | `dhscanner.core/dhscanner.service.fronts/php`        | PHP AST (`/to/php/ast`)                         |
-| `frontpy`  | `dhscanner.core/dhscanner.service.fronts/py`         | native Python AST (`/to/native/py/ast`)         |
-| `frontrb`  | `dhscanner.core/dhscanner.service.fronts/rb`         | native CRuby AST (`/to/native/cruby/ast`)       |
-| `frontcs`  | `dhscanner.core/dhscanner.service.fronts/cs`         | native C# AST (`/to/native/cs/ast`)             |
-| `frontgo`  | `dhscanner.core/dhscanner.service.fronts/go`         | native Go AST (`/to/native/go/ast`)             |
+| `frontjs`   | `dhscanner.core/dhscanner.service.fronts/js`         | Esprima JS AST (`/to/esprima/js/ast`)           |
+| `frontts`   | `dhscanner.core/dhscanner.service.fronts/ts`         | native TS AST (`/to/native/ts/ast`)             |
+| `frontphp`  | `dhscanner.core/dhscanner.service.fronts/php`        | PHP AST (`/to/php/ast`)                         |
+| `frontpy`   | `dhscanner.core/dhscanner.service.fronts/py`         | native Python AST (`/to/native/py/ast`)         |
+| `frontrb`   | `dhscanner.core/dhscanner.service.fronts/rb`         | native CRuby AST (`/to/native/cruby/ast`)       |
+| `frontcs`   | `dhscanner.core/dhscanner.service.fronts/cs`         | native C# AST (`/to/native/cs/ast`)             |
+| `frontgo`   | `dhscanner.core/dhscanner.service.fronts/go`         | native Go AST (`/to/native/go/ast`)             |
+| `frontjava` | `dhscanner.core/dhscanner.service.fronts/java`       | native Java AST (`/to/native/java/ast`), via javac's `com.sun.source.*` public tree API |
 
 YAML/YML have no separate front — the `parsers` service parses them
 directly (`dhscanner.infra/workers/native_parser/main.py` short-circuits
