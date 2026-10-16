@@ -1110,3 +1110,254 @@ jobs:
 
       - name: remove formbricks tested code
         run: rm -rf formbricks
+
+      - name: scan a single DSpace Java file ( parser-coverage sensor )
+        run: |
+          # Parser-coverage regression sensor for the Java pipeline. Picks
+          # ONE representative medium-size file ( dspace-api/src/main/java/
+          # org/dspace/content/MetadataValue.java, 7726 bytes at tag
+          # dspace-10.1 ) out of DSpace, drops it into a one-file sample
+          # dir, and runs the full CLI scan over just that file. The point
+          # is NOT to exercise the whole DSpace corpus ( ~3.9k .java files,
+          # ~10 min end-to-end today ) -- it's to anchor a single canonical
+          # Java class to the two parsing stages so the assertion step
+          # below can grep the logger DB for the exact two success rows.
+          #
+          # MetadataValue.java was picked because it is a canonical JPA
+          # entity carrying the typical mix of real-world Java language
+          # constructs : package declaration, 10+ imports ( jakarta.*,
+          # 3rd-party, project-internal ), class-level + field-level
+          # annotations ( `@Entity`, `@Table`, `@Id`, `@Column`,
+          # `@GeneratedValue`, `@SequenceGenerator`, `@ManyToOne`,
+          # `@JoinColumn`, `@Nullable`, `@Transient`, `@Override` ),
+          # `implements ReloadableEntity<Integer>` ( generic interface ),
+          # protected ctor, getters / setters, overridden equals /
+          # hashCode / toString with explicit cast + string concat.
+          # If this one parses well, the grammar is at least covering
+          # the common shapes a real .java file brings.
+          #
+          # Pinned to tag dspace-10.1 ( annotated tag -> commit
+          # a1f5969b3a6a1ac324328bbe2f1d0df8567df9f3 ) so file size + content
+          # stay reproducible across CI runs. --depth 1 keeps the clone
+          # small ; we only need the tree at that one tag anyway.
+          git clone --depth 1 --branch dspace-10.1 https://github.com/DSpace/DSpace.git dspace-src
+          mkdir -p dspace_java_sample
+          cp dspace-src/dspace-api/src/main/java/org/dspace/content/MetadataValue.java dspace_java_sample/
+          # One-file scan : faster than the end-to-end DSpace scan, and
+          # scoping the collected set to a single `MetadataValue.java`
+          # lets the assertion step below filter the logger DB by
+          # ( original_filename, language ) without carrying a job_id
+          # around ( the CLI's "[ step 2 ] created job id" log line
+          # truncates the id to a 4+4 digest so recovering it from
+          # stdout would be lossy anyway ).
+          python -m cli run --scan_dirname ./dspace_java_sample --ignore_testing_code true --save_sarif_to dspace.sarif.json
+
+      - name: assert MetadataValue.java parsed via both native + dhscanner stages
+        run: |
+          # Asserts the logger's `logs` table carries the two success
+          # rows the Java pipeline is expected to emit for the scan
+          # above :
+          #
+          #   context=NATIVE_PARSING_SUCCEEDED    language=JAVA
+          #                                        original_filename=MetadataValue.java
+          #   context=DHSCANNER_PARSING_SUCCEEDED language=JAVA
+          #                                        original_filename=MetadataValue.java
+          #
+          # Native-parsing is the first stage : `frontjava` ( jlink-trimmed
+          # JDK, see dhscanner.core/dhscanner.service.fronts/java/Dockerfile )
+          # exposes `/to/native/java/ast` and delegates to javac's own
+          # public tree API ( com.sun.source.* in `jdk.compiler` ). The
+          # dhscanner-parsing stage is second : the native AST JSON gets
+          # POSTed to the parsers service at `/from/java/to/dhscanner/ast`,
+          # which runs the Happy grammar in dhscanner.core/dhscanner.
+          # service.parsers/src/JavaParser.y on it and normalises to the
+          # shared `Ast.Root` shape.
+          #
+          # Current state ( dhscanner-parsers 1.1.25-x64 pinned in
+          # compose.prebuilt.yaml ) : `JavaParser.y` is still a stub --
+          # its `program` rule is a verbatim copy from `JsParser.y` and
+          # expects an esprima-shaped envelope, which does not match
+          # the `{kind, loc, text, children}` tree frontjava emits.
+          # The comment block above `Language.JAVA` in dhscanner.infra/
+          # workers/dhscanner_parser/main.py spells this out and
+          # explicitly says "every real .java file will log
+          # DHSCANNER_PARSING_FAILED at col 2-8 of line 1". So the
+          # DHSCANNER half of this assertion is EXPECTED to fail
+          # today ; it flips to PASS once JavaParser.y is rewritten
+          # against frontjava's shape.
+          #
+          # This step is the parser-coverage regression sensor for that
+          # work -- matches the "regression repo / fixed set of source
+          # files acts as the coverage benchmark" discipline the TS
+          # grammar follows ( see dhscanner.core/dhscanner.service.
+          # parsers/AGENTS.md -> "Improving Parsers Coverage" ). Once
+          # the Java grammar lands and emits a proper dhscanner AST
+          # for MetadataValue.java this step turns green, and any
+          # future regression ( grammar edit that re-breaks this
+          # canonical file ) is caught right here.
+          #
+          # Filtering by ( original_filename, language='JAVA' ) is
+          # unique for this scan : no earlier step in this workflow
+          # scans a Java corpus ( sickchill / idurar / memos / formbricks
+          # are Python / JS / Go / TS respectively ), so no collision
+          # with pre-existing logger rows is possible.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          # Dump every log row for this file so a failing run has the
+          # full forensic trail inline ( context, language, more_details --
+          # the last column carries the parse-error location when the
+          # dhscanner stage fails, e.g. `[1:2-1:8]` ). `-tA -F '|'` strips
+          # psql's pretty borders so each row is a single pipe-separated
+          # line that greps cleanly.
+          echo "--- all logger rows for MetadataValue.java ---"
+          $compose exec -T logger psql -U user -d logs -tA -F '|' -c \
+            "SELECT context, language, more_details FROM logs \
+             WHERE original_filename='MetadataValue.java' \
+             ORDER BY msg;" | tee dspace_java_rows.log
+          native_ok=$($compose exec -T logger psql -U user -d logs -tA -c \
+            "SELECT COUNT(*) FROM logs WHERE \
+               original_filename='MetadataValue.java' AND \
+               language='JAVA' AND \
+               context='NATIVE_PARSING_SUCCEEDED';" | tr -d '[:space:]')
+          dhscanner_ok=$($compose exec -T logger psql -U user -d logs -tA -c \
+            "SELECT COUNT(*) FROM logs WHERE \
+               original_filename='MetadataValue.java' AND \
+               language='JAVA' AND \
+               context='DHSCANNER_PARSING_SUCCEEDED';" | tr -d '[:space:]')
+          echo "native_ok=${native_ok}  dhscanner_ok=${dhscanner_ok}"
+          failed=0
+          if [ "${native_ok:-0}" -lt 1 ]; then
+            echo "FAIL: no NATIVE_PARSING_SUCCEEDED row for MetadataValue.java ( JAVA )"
+            failed=1
+          fi
+          if [ "${dhscanner_ok:-0}" -lt 1 ]; then
+            echo "FAIL: no DHSCANNER_PARSING_SUCCEEDED row for MetadataValue.java ( JAVA )"
+            failed=1
+          fi
+          if [ "${failed}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "PASS: MetadataValue.java reached both NATIVE and DHSCANNER parsing successfully"
+          rm -f dspace_java_rows.log
+
+      - name: scan full DSpace repo ( parser-coverage benchmark, --with_agent )
+        run: |
+          # Full-repo parser-coverage benchmark. Scans the entire DSpace
+          # tree ( ~3148 .java files at tag dspace-10.1 after
+          # --ignore_testing_code filtering ) with the agent-mode CLI
+          # flag so the pipeline stops after the KB has been written and
+          # does NOT need to synthesize SARIF -- the thing we're measuring
+          # here is PARSER coverage, not any downstream analysis.
+          #
+          # Reuses the `dspace-src` clone from the single-file sensor
+          # above ( `scan a single DSpace Java file` ) ; the final
+          # `remove DSpace tested code` step cleans both up together.
+          #
+          # The next step counts DHSCANNER_PARSING_SUCCEEDED rows from
+          # the logger DB and asserts the count is at or above the
+          # last-recorded baseline. See its header comment for the
+          # exact baseline + regression-detection rationale.
+          python -m cli run --scan_dirname ./dspace-src --ignore_testing_code true --with_agent 2>&1 | tee dspace_full_scan.log
+          echo "--- last 20 lines of scan log ---"
+          tail -n 20 dspace_full_scan.log
+
+      - name: assert >= 695 Java files parse end-to-end on full DSpace scan
+        run: |
+          # Parser-coverage REGRESSION BENCHMARK on the full DSpace repo.
+          # Counts DHSCANNER_PARSING_SUCCEEDED rows ( language=JAVA ) in
+          # the logger DB and asserts the count is at or above the
+          # current baseline of 695 -- the exact number measured on
+          # dspace-10.1 by this workflow after the following iterations
+          # shipped in dhscanner.service.parsers / dhscanner.service.fronts :
+          #
+          # NOTE : local scans measured 704 on the same input, so there is
+          # a ~9-file gap between local + CI that we still need to debug
+          # ( likely a timing / submission-batch difference against the
+          # agent, or a logger-DB visibility race ). The baseline here is
+          # pinned to the CI-measured number so the benchmark is monotone
+          # against the CI oracle itself ; once the 704 vs 695 gap is
+          # explained + closed, bump this threshold back up accordingly.
+          #
+          #   - stmt_try + stmt_catch  ( try / catch grammar + action )
+          #   - expTernary             ( CONDITIONAL_EXPRESSION, instrumented
+          #                              as nested instrumentationCall -- see
+          #                              TsParserActions.expTernary for the
+          #                              `[ternary_cond]` / `[ternary_then]` /
+          #                              `[ternary_else]` nest convention )
+          #   - tokenID helper         ( `annotations` identifier/keyword
+          #                              collision -- Alex reserved the
+          #                              structural JSON field name as a
+          #                              lexer keyword, which blew up any
+          #                              Java identifier literally spelled
+          #                              `annotations` ; unblocked 78
+          #                              HATEOAS Resource wrappers + 6
+          #                              unrelated identifier collisions )
+          #   - PARENTHESIZED unwrap   ( printer-level transparent unwrap
+          #                              of ParenthesizedTree in frontjava
+          #                              + paired grammar cleanup -- parens
+          #                              carry no analysis signal beyond
+          #                              grouping, which is already encoded
+          #                              structurally )
+          #
+          # Baseline source : see dhscanner.core/dhscanner.service.parsers/
+          # JAVA_PROGRESS.md "DSpace scan-wide coverage trajectory" table
+          # for the pre-session baseline ( 607 ) and the shipped iteration
+          # datapoints ( 620 -> 704 ). Each future iteration that moves
+          # the needle should bump this threshold to the new measured
+          # value in the same commit, so the benchmark stays monotone.
+          #
+          # Scoped by job_id : the single-file sensor step above also
+          # contributes exactly one successful JAVA parse ( MetadataValue.
+          # java ) under its own job_id. We restrict the count to the
+          # LATEST JAVA job in the DB -- which, because this step runs
+          # AFTER the full-repo scan, is the full-repo scan's job -- so
+          # the single-file sensor's row is not double-counted.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          job_id=$($compose exec -T logger psql -U user -d logs -tA -c \
+            "SELECT job_id FROM logs \
+             WHERE language='JAVA' AND context='UPLOADED_FILE_RECEIVED' \
+             ORDER BY msg DESC LIMIT 1;" | tr -d '[:space:]')
+          echo "latest JAVA job_id = ${job_id}"
+          if [ -z "${job_id}" ]; then
+            echo "FAIL: could not resolve latest JAVA job_id from logger DB"
+            exit 1
+          fi
+          # Full per-context breakdown for the forensic trail -- native
+          # successes, dhscanner successes, dhscanner failures.
+          echo "--- counts for job ${job_id} ---"
+          $compose exec -T logger psql -U user -d logs -c \
+            "SELECT context, COUNT(*) FROM logs \
+             WHERE language='JAVA' AND job_id='${job_id}' \
+             GROUP BY context ORDER BY COUNT(*) DESC;"
+          success=$($compose exec -T logger psql -U user -d logs -tA -c \
+            "SELECT COUNT(*) FROM logs WHERE \
+               language='JAVA' AND \
+               context='DHSCANNER_PARSING_SUCCEEDED' AND \
+               job_id='${job_id}';" | tr -d '[:space:]')
+          echo "DHSCANNER_PARSING_SUCCEEDED (JAVA) : ${success}"
+          BASELINE=695
+          if [ "${success:-0}" -lt "${BASELINE}" ]; then
+            echo "FAIL: Java parser coverage regressed. Expected >= ${BASELINE}, got ${success}."
+            echo "      Inspect the per-context breakdown above + bucket the"
+            echo "      new DHSCANNER_PARSING_FAILED rows by more_details to"
+            echo "      see which construct stopped parsing :"
+            echo "        SELECT more_details, COUNT(*) FROM logs"
+            echo "         WHERE language='JAVA' AND context='DHSCANNER_PARSING_FAILED'"
+            echo "           AND job_id='${job_id}'"
+            echo "         GROUP BY more_details ORDER BY COUNT(*) DESC LIMIT 10;"
+            exit 1
+          fi
+          echo "PASS: ${success} Java files parsed end-to-end ( baseline >= ${BASELINE} )"
+          rm -f dspace_full_scan.log
+
+      - name: remove DSpace tested code
+        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log
