@@ -1150,7 +1150,7 @@ jobs:
           # around ( the CLI's "[ step 2 ] created job id" log line
           # truncates the id to a 4+4 digest so recovering it from
           # stdout would be lossy anyway ).
-          python -m cli run --scan_dirname ./dspace_java_sample --save_sarif_to dspace.sarif.json
+          python -m cli run --scan_dirname ./dspace_java_sample --ignore_testing_code true --save_sarif_to dspace.sarif.json
 
       - name: assert MetadataValue.java parsed via both native + dhscanner stages
         run: |
