@@ -1,0 +1,50 @@
+# Dev-only override for iterating on the parsers Haskell grammar from
+# source. The default `compose.prebuilt.yaml` points `parsers` at the
+# published Dockerhub image ( `orenishdocker/dhscanner-parsers:<ver>-x64` )
+# which cannot be rebuilt locally. This override swaps in a local `build:`
+# directive pointing at the parsers service Dockerfile so edits to
+# JavaParser.y / JavaLexer.x / JavaParserActions.hs ( or any of the other
+# per-language grammars ) actually land in the running `parsers` container.
+#
+# Append it LAST on the compose chain so it wins over compose.prebuilt.yaml :
+#
+#   docker compose --env-file .env \
+#     -f ./compose/compose.base.yaml \
+#     -f ./compose/compose.app.yaml \
+#     -f ./compose/compose.fronts.yaml \
+#     -f ./compose/compose.prebuilt.yaml \
+#     -f ./compose/compose.workers.yaml \
+#     -f ./compose/compose.parsers-dev.yaml \
+#     build parsers
+#
+# Then:
+#     docker compose ... up -d --no-deps parsers
+# to recreate the container with the newly-built image.
+#
+# Host-port publication ( `parsers`, `frontjava` ) is scoped to this
+# dev override, not the production prebuilt / vps stacks. It is here so
+# the per-language grammar-coverage loops ( `java_agent_loop.py` et al.
+# in dhscanner.core/dhscanner.service.parsers/ ) can POST source files
+# and native ASTs from the host without going through the orchestrator
+# at :8000. The port numbers mirror the standalone parsers dev stack
+# (`dhscanner.service.parsers/compose.yaml`) that the TS / PHP loops
+# use when run outside the vps compose chain:
+#
+#     parsers    4001 -> 3000
+#     frontjava  5005 -> 5000   (per-language convention: 500x host port)
+#
+# If you add host ports for other fronts here ( frontts, frontphp, ... )
+# to drive their loops through this same chain, keep them on 500x so
+# they stay greppable; the parsers port stays 4001 for all languages.
+services:
+  parsers:
+    build:
+      context: ../dhscanner.core/dhscanner.service.parsers
+      dockerfile: Dockerfile
+    image: compose-parsers
+    ports:
+      - "4001:3000"
+
+  frontjava:
+    ports:
+      - "5005:5000"
