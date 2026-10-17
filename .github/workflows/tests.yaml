@@ -1265,20 +1265,23 @@ jobs:
           echo "--- last 20 lines of scan log ---"
           tail -n 20 dspace_full_scan.log
 
-      - name: assert >= 1125 Java files parse end-to-end on full DSpace scan
+      - name: assert >= 2000 Java files parse end-to-end on full DSpace scan
         run: |
           # Parser-coverage REGRESSION BENCHMARK on the full DSpace repo.
           # Counts DHSCANNER_PARSING_SUCCEEDED rows ( language=JAVA ) in
           # the logger DB and asserts the count is at or above the
-          # current baseline of 1125 -- a conservative floor under the
-          # 1163 files measured locally on dspace-10.1 after the
-          # METHOD/CONSTRUCTOR envelope iteration shipped in
-          # dhscanner.service.parsers / dhscanner.service.fronts :
+          # current baseline of 2000 -- a conservative floor under the
+          # 2104 files measured locally on dspace-10.1 after the Java
+          # grammar-coverage agent loop ( iters 3-29 ) shipped in
+          # dhscanner.service.parsers / dhscanner.service.fronts and
+          # crossed the 2,000-file milestone tracked by
+          # OrenGitHub/dhscanner.runner#92 :
           #
-          # NOTE : local scans measured 1163 on the same input. The
-          # previous bar had a ~9-file local-vs-CI gap ( 704 vs 695 );
-          # 1125 keeps a similar conservative margin (~38 files) so
-          # the benchmark is monotone against the CI oracle itself.
+          # NOTE : local scans measured 2104 on the same input. The
+          # previous bar had a ~38-file local-vs-CI margin ( 1125 vs
+          # 1163 ); 2000 keeps a comparable conservative margin (~104
+          # files) so the benchmark stays monotone against the CI
+          # oracle itself.
           #
           #   - stmt_try + stmt_catch  ( try / catch grammar + action )
           #   - expTernary             ( CONDITIONAL_EXPRESSION, instrumented
@@ -1306,14 +1309,28 @@ jobs:
           #                              on leaves / binops. Unblocked the
           #                              DSpace abstract factory/service
           #                              cluster -- local 704 -> 1163 )
+          #   - agent-loop iters 3-29   ( OpenAI-driven one-rule-at-a-time
+          #                              widening of JavaParser.y /
+          #                              JavaParserActions.hs under the
+          #                              strict-progress gate ; headline
+          #                              unblockers were NEW_ARRAY as exp
+          #                              (iter 26, +155), ARRAY_ACCESS as
+          #                              assignment LHS / exp_var (iter 27,
+          #                              +150), MEMBER_SELECT in `type`
+          #                              i.e. qualified type names like
+          #                              `org.w3c.dom.Document` (iter 28,
+          #                              +93), and various smaller shapes.
+          #                              Local 1163 -> 2104, crossing the
+          #                              2,000-file milestone tracked by
+          #                              OrenGitHub/dhscanner.runner#92 )
           #
           # Baseline source : see dhscanner.core/dhscanner.service.parsers/
           # JAVA_PROGRESS.md "DSpace scan-wide coverage trajectory" table
           # for the pre-session baseline ( 607 ) and the shipped iteration
-          # datapoints ( 620 -> 704 -> 1163 ). Each future iteration that
-          # moves the needle should bump this threshold to the new
-          # measured value in the same commit, so the benchmark stays
-          # monotone.
+          # datapoints ( 620 -> 704 -> 1163 -> 2104 ). Each future
+          # iteration that moves the needle should bump this threshold to
+          # the new measured value in the same commit, so the benchmark
+          # stays monotone.
           #
           # Scoped by job_id : the single-file sensor step above also
           # contributes exactly one successful JAVA parse ( MetadataValue.
@@ -1349,7 +1366,7 @@ jobs:
                context='DHSCANNER_PARSING_SUCCEEDED' AND \
                job_id='${job_id}';" | tr -d '[:space:]')
           echo "DHSCANNER_PARSING_SUCCEEDED (JAVA) : ${success}"
-          BASELINE=1125
+          BASELINE=2000
           if [ "${success:-0}" -lt "${BASELINE}" ]; then
             echo "FAIL: Java parser coverage regressed. Expected >= ${BASELINE}, got ${success}."
             echo "      Inspect the per-context breakdown above + bucket the"
