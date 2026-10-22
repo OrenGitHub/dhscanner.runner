@@ -256,36 +256,13 @@ jobs:
           # dynamic, but we redeclare defensively here for standalone
           # swipl invocations that don't go through `template.pl`.
           #
-          # `set_prolog_flag(character_escapes, false)` : disables Prolog's
-          # ISO-standard backslash-escape processing inside quoted atoms
-          # when reading source. The formbricks KB contains `kb_const_string`
-          # facts whose atoms hold user-source string literals verbatim --
-          # including regex fragments like `'\d+'` and JSON-path pieces
-          # like `'foo\/bar'`. Under the default flag SWI-Prolog 9 rejects
-          # those as `Unknown character escape` syntax errors and drops
-          # the offending clauses ; a partial KB then silently under-reports
-          # matches ( eg the first CI run of this step reported
-          # `MATCH_COUNT: 0` after three `\d` / `\/` errors ). Disabling
-          # escapes makes every backslash a literal character, so every
-          # emitted clause loads regardless of which language / framework
-          # the atoms came from. Long-term this should move upstream to
-          # kbgen ( proper backslash doubling on emit ), at which point
-          # this line can be removed.
-          #
-          # ORDER MATTERS : consult utils.pl BEFORE flipping the flag.
-          # `auth_1st_party_wrapper_helper/2` in utils.pl uses a
-          # `split_string(S, "\"", "", [_, FileStr, _, _, TailStr])` call
-          # to parse `kb_call_resolved`'s FirstPartyImport Haskell-Show
-          # atom -- the `"\""` string literal there IS an ISO escape (
-          # `\"` = single `"` character ) and depends on the default
-          # `character_escapes = true`. If we consulted utils.pl AFTER
-          # setting the flag off, that literal would be misread as a
-          # backslash followed by a stray quote, terminating the string
-          # prematurely and producing a syntax error. `dynamic/1`
-          # declarations for potentially-empty kb_* predicates go AFTER
-          # utils.pl too so they don't need re-declaration inside it.
+          # No `set_prolog_flag(character_escapes, false)` : kbgen >= 2.2.0
+          # escapes `\` and `'` inside quoted atoms on emit, so the KB loads
+          # under the default ISO escapes ( and turning them off would now
+          # misread the emitted `\'` ). `dynamic/1` declarations for
+          # potentially-empty kb_* predicates go AFTER utils.pl so they
+          # don't need re-declaration inside it.
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -473,8 +450,8 @@ jobs:
           #
           # See the "assert shape recognizer detects checkAuth" step above
           # for the full rationale on the swipl invocation shape (consult
-          # order, `set_prolog_flag(character_escapes, false)`, `dynamic()`
-          # declarations for potentially-empty kb_* predicates).
+          # order, `dynamic()` declarations for potentially-empty kb_*
+          # predicates).
           compose="docker compose \
             -f ./compose/compose.base.yaml \
             -f ./compose/compose.app.yaml \
@@ -483,7 +460,6 @@ jobs:
             -f ./compose/compose.workers.yaml"
           echo "querying queryengine's swipl for URL flows into getUploadSignedUrl's returns"
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -562,11 +538,9 @@ jobs:
             -f ./compose/compose.workers.yaml"
           echo "querying queryengine's swipl for POST endpoint enumeration"
           # See the "assert shape recognizer detects checkAuth" step above
-          # for the full rationale on `set_prolog_flag(character_escapes,
-          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
-          # consult sequence ; the same reasoning applies here verbatim.
+          # for the full rationale on the `dynamic(kb_*)` declarations and
+          # the consult sequence ; the same reasoning applies here verbatim.
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -656,13 +630,11 @@ jobs:
             -f ./compose/compose.workers.yaml"
           echo "querying queryengine's swipl for 3x2 GET/POST/PUT endpoint enumeration"
           # See the "assert shape recognizer detects checkAuth" step above
-          # for the full rationale on `set_prolog_flag(character_escapes,
-          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
-          # consult sequence ; the same reasoning applies here verbatim.
+          # for the full rationale on the `dynamic(kb_*)` declarations and
+          # the consult sequence ; the same reasoning applies here verbatim.
           # `kb_callable_source_body_length/2` is required by the PUT
           # wrapper unwrap ( endpoints_hoc_dict_handler_unwrap_nextjs/2 ).
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -799,11 +771,9 @@ jobs:
             -f ./compose/compose.workers.yaml"
           echo "querying queryengine's swipl for Prisma FQNs reachable from the bulk PUT handler"
           # See the "assert shape recognizer detects checkAuth" step above
-          # for the full rationale on `set_prolog_flag(character_escapes,
-          # false)`, `dynamic(kb_*)` declarations, and the ORDER-MATTERS
-          # consult sequence ; the same reasoning applies here verbatim.
+          # for the full rationale on the `dynamic(kb_*)` declarations and
+          # the consult sequence ; the same reasoning applies here verbatim.
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -910,7 +880,6 @@ jobs:
             -f ./compose/compose.workers.yaml"
           echo "querying queryengine's swipl for SSRF-sink FQNs reachable from the slack-callback GET handler"
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
@@ -1044,7 +1013,6 @@ jobs:
           # per-site AND stable under cosmetic whitespace / wrapping
           # edits that would shift columns.
           query="consult('/queryengine/utils.pl'), \
-                 set_prolog_flag(character_escapes, false), \
                  dynamic(kb_callable_returns_without_value/2), \
                  dynamic(kb_call_1st_party_func_defined_in_file/3), \
                  dynamic(kb_call_1st_party_func_defined_in_dir/3), \
