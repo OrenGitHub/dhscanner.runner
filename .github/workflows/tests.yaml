@@ -1271,6 +1271,55 @@ jobs:
           fi
           rm -f dspace_oidc_kb.pl
 
+      - name: assert kb_gated_call facts on OidcRestController.java KB
+        run: |
+          # The open redirect at :71 and the sendError at :76-77 sit on
+          # opposite branches of the :69 host check. See
+          # tests/expected/facts/dspace/oidc_gated_calls.txt.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          $compose cp "queryengine:${dspace_oidc_kb_path}" ./dspace_oidc_kb.pl
+          missing=0
+          total=0
+          while IFS= read -r expected || [ -n "$expected" ]; do
+            expected=$(printf '%s' "$expected" | tr -d '\r')
+            [ -z "$expected" ] && continue
+            case "$expected" in \#*) continue ;; esac
+            total=$((total + 1))
+            if grep -Fqx "$expected" dspace_oidc_kb.pl; then
+              echo "  OK  : $expected"
+            else
+              echo "  MISS: $expected"
+              missing=$((missing + 1))
+            fi
+          done < tests/expected/facts/dspace/oidc_gated_calls.txt
+          echo "checked=$total missing=$missing"
+          if [ "$missing" -gt 0 ]; then
+            echo "FAILED: $missing kb_gated_call fact(s) missing"
+            exit 1
+          fi
+          rm -f dspace_oidc_kb.pl
+
+      - name: assert kbapi replies for the guarded OIDC open redirect
+        run: |
+          # The four queries the agent walks on GET /api/authn/oidc ( #105 ) :
+          # reachable sendRedirect sink, redirectUrl user input, dataflow
+          # :54 -> :71, and the :69 equalsAny guard with the sendError
+          # message on its other branch. queryengine is internal to the
+          # compose network, so the stdlib-only checker runs inside `app`.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${dspace_oidc_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/oidc_guard.py
+
       - name: scan full DSpace repo ( parser-coverage benchmark, --with_agent )
         run: |
           # Full-repo parser-coverage benchmark. Scans the entire DSpace

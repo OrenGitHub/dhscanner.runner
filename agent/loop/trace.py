@@ -45,6 +45,7 @@ class Event(str):
     SCAN_STARTED = "scan_started"
     QUEUE_SEEDED = "queue_seeded"
     ITEM_POPPED = "item_popped"
+    LLM_ROUND = "llm_round"
     KBAPI_CALL = "kbapi_call"
     KBAPI_REPLY = "kbapi_reply"
     LLM_VERDICT = "llm_verdict"
@@ -102,6 +103,47 @@ class ScanTrace:
 
     def item_popped(self, item_id: int, endpoint: EndpointRef) -> None:
         self._emit(Event.ITEM_POPPED, item=item_id, endpoint=endpoint.model_dump())
+
+    def llm_round(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        item_id: int,
+        round_index: int,
+        *,
+        content: str,
+        finish_reason: typing.Optional[str],
+        tool_calls: list[dict[str, typing.Any]],
+        reasoning_tokens: typing.Optional[int],
+    ) -> None:
+        """One assistant turn from a fresh session (\u00a74.1 point 3).
+
+        Emitted ONCE per OpenAI chat-completion response within a
+        session, BEFORE the subsequent ``kbapi_call``/``kbapi_reply``
+        pairs that reify the tool calls. Captures:
+
+        * ``content`` \u2014 the between-tool-calls narration the model
+          produced on this round (often empty when the model goes
+          straight to tool_calls, non-empty on the final round where it
+          returns the LlmResponse JSON).
+        * ``tool_calls`` \u2014 raw list of {id, name, arguments} as the
+          model emitted them. Preserving the raw ``arguments`` string
+          lets an auditor see malformed-JSON attempts that the session
+          loop rejected without an accompanying ``kbapi_call`` event.
+        * ``finish_reason`` \u2014 OpenAI's termination signal
+          (``tool_calls`` / ``stop`` / ``length`` / \u2026).
+        * ``reasoning_tokens`` \u2014 reasoning-token count from
+          ``usage.completion_tokens_details`` if the model exposes it
+          (gpt-5-ish). The content of the reasoning is NOT returned by
+          the chat-completions API, so only the count is auditable here.
+        """
+        self._emit(
+            Event.LLM_ROUND,
+            item=item_id,
+            round=round_index,
+            content=content,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            reasoning_tokens=reasoning_tokens,
+        )
 
     def kbapi_call(self, item_id: int, call_index: int, query: dict[str, typing.Any]) -> None:
         self._emit(Event.KBAPI_CALL, item=item_id, call=call_index, query=query)

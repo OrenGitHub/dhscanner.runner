@@ -107,6 +107,11 @@ Hard constraints:
   `email_token`). Pair-edges go to the front of the queue by default.
 * Narrating the counts snapshot in `reason_for_verdict` is encouraged
   (base rates, anomalies) \u2014 but you cannot mutate it.
+* A sink reached by user input is not a finding yet: check whether an
+  `if` guards it (`BranchGuardedCall` on the sink call). A sink whose
+  sibling branch returns an error is evidence of a guard \u2014 read the
+  condition and the error string, judge whether the condition really
+  restricts the input, and cite both in `reason_for_verdict`.
 """
 
 
@@ -128,6 +133,9 @@ _ALLOWED_TAGS: tuple[str, ...] = (
     "DataFlowPath",
     "ControlFlowReachableSqlSink",
     "ControlFlowReachableFileActionSink",
+    "ControlFlowReachableOpenRedirectSink",
+    "HandlerUserInputs",
+    "BranchGuardedCall",
 )
 
 
@@ -174,6 +182,25 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "    { controlFlowReachableFileActionSinkFrom: Location,\n"
     "      controlFlowReachableFileActionSinkLimitNumHops: int,\n"
     "      controlFlowReachableFileActionSinkLimit: int }\n"
+    "\n"
+    "  ControlFlowReachableOpenRedirectSink:\n"
+    "    { controlFlowReachableOpenRedirectSinkFrom: Location,\n"
+    "      controlFlowReachableOpenRedirectSinkLimitNumHops: int,\n"
+    "      controlFlowReachableOpenRedirectSinkLimit: int }\n"
+    "    -> each match's `location` is the sink CALL SITE.\n"
+    "\n"
+    "  HandlerUserInputs:\n"
+    "    { handlerUserInputsHandler: Location,\n"
+    "      handlerUserInputsLimit: int }\n"
+    "    -> the handler params bound from the request; use a match's\n"
+    "       `location` as `dataFlowPathFrom`.\n"
+    "\n"
+    "  BranchGuardedCall:\n"
+    "    { branchGuardedCallCall: Location,\n"
+    "      branchGuardedCallLimit: int }\n"
+    "    -> every `if` whose then/else branch holds the call: the\n"
+    "       condition (location + fqn) and the calls on the OTHER\n"
+    "       branch, with their const-string args.\n"
     "\n"
     "The endpoint on your desk carries its `handler_location`: that is "
     "the Location you want for the *From/Caller/Location field of "
@@ -245,12 +272,32 @@ class SessionResult:
 
 
 class SessionTraceHook(typing.Protocol):
+    def llm_round(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        round_index: int,
+        *,
+        content: str,
+        finish_reason: typing.Optional[str],
+        tool_calls: list[dict[str, typing.Any]],
+        reasoning_tokens: typing.Optional[int],
+    ) -> None: ...
     def kbapi_call(self, call_index: int, query: dict[str, typing.Any]) -> None: ...
     def kbapi_reply(self, call_index: int, reply: dict[str, typing.Any]) -> None: ...
 
 
 class _NullHook:
     # pylint: disable=unused-argument
+    def llm_round(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        round_index: int,
+        *,
+        content: str,
+        finish_reason: typing.Optional[str],
+        tool_calls: list[dict[str, typing.Any]],
+        reasoning_tokens: typing.Optional[int],
+    ) -> None:
+        return
+
     def kbapi_call(self, call_index: int, query: dict[str, typing.Any]) -> None:
         return
 
@@ -358,6 +405,40 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
 
         msg = resp.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None) or []
+
+        # Emit the per-round trace event BEFORE any tool-call processing
+        # so an auditor reads: `llm_round` (what the model said / asked
+        # for this turn) -> `kbapi_call`/`kbapi_reply` pairs (the KB
+        # ping-pong) -> next `llm_round` or final `llm_verdict`. Keep the
+        # getattr chain defensive: `usage` + `completion_tokens_details`
+        # are only present on reasoning-capable models (gpt-5-ish), and
+        # on older SDKs the fields may not exist at all.
+        reasoning_tokens: typing.Optional[int] = None
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                maybe = getattr(details, "reasoning_tokens", None)
+                if isinstance(maybe, int):
+                    reasoning_tokens = maybe
+        hook.llm_round(
+            round_index + 1,
+            content=msg.content or "",
+            finish_reason=getattr(resp.choices[0], "finish_reason", None),
+            # Raw arguments string (NOT json.loads'd) so malformed-JSON
+            # tool_calls are visible in the trace even when the session
+            # rejects them below without a matching `kbapi_call` event.
+            tool_calls=[
+                {
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                }
+                for tc in tool_calls
+            ],
+            reasoning_tokens=reasoning_tokens,
+        )
+
         if not tool_calls:
             parsed = _parse_llm_response(msg.content or "{}")
             if parsed is None:

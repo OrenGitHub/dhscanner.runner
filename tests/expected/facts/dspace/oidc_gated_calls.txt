@@ -1,0 +1,24 @@
+# Expected kb_gated_call facts for the guarded open redirect in DSpace
+# dspace-10.1 at:
+#
+#     dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java
+#
+#         if (Strings.CI.equalsAny(redirectHostName, ...)) {          // line 69
+#             log.debug("OIDC redirecting to {}", redirectUrl);       // line 70
+#             response.sendRedirect(redirectUrl);                     // line 71
+#         } else {
+#             log.error("Invalid OIDC redirectURL={}." ...);          // lines 73-75
+#             response.sendError(HttpServletResponse.SC_BAD_REQUEST,  // line 76
+#                 "Invalid redirectURL! Must match server or ui hostname."); // line 77
+#         }
+#
+# Every call on a branch is gated by the :69 condition, with the branch it
+# sits on ( true = then, false = else ). The sink :71 and the error
+# response :76-77 share the condition on opposite branches.
+#
+# Lines starting with '#' and blank lines are ignored by the CI checker.
+
+kb_gated_call( startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_70_13_endloc_70_61_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, true ).
+kb_gated_call( startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_71_13_endloc_71_47_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, true ).
+kb_gated_call( startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, false ).
+kb_gated_call( startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_76_13_endloc_77_89_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, false ).

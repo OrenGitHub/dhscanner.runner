@@ -341,6 +341,24 @@ class _TraceHook:
         self._trace = trace
         self._item_id = item_id
 
+    def llm_round(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        round_index: int,
+        *,
+        content: str,
+        finish_reason: typing.Optional[str],
+        tool_calls: list[dict[str, typing.Any]],
+        reasoning_tokens: typing.Optional[int],
+    ) -> None:
+        self._trace.llm_round(
+            self._item_id,
+            round_index,
+            content=content,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            reasoning_tokens=reasoning_tokens,
+        )
+
     def kbapi_call(self, call_index: int, query: dict[str, typing.Any]) -> None:
         self._trace.kbapi_call(self._item_id, call_index, query)
 
