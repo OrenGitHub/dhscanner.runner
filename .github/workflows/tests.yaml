@@ -1212,6 +1212,65 @@ jobs:
           echo "PASS: MetadataValue.java reached both NATIVE and DHSCANNER parsing successfully"
           rm -f dspace_java_rows.log
 
+      - name: scan a single DSpace Java file ( OidcRestController.java, --with_agent )
+        run: |
+          # One-file agent-mode scan of OidcRestController.java out of the
+          # `dspace-src` clone above. The sample dir keeps the file's
+          # repo-relative path so the KB location atoms match the expected
+          # facts exactly. One file keeps the KB small ( the full DSpace KB
+          # exceeds the queryengine upload limit ).
+          sample=dspace_oidc_sample/dspace-server-webapp/src/main/java/org/dspace/app/rest
+          mkdir -p "$sample"
+          cp dspace-src/dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java "$sample/"
+          python -m cli run --scan_dirname ./dspace_oidc_sample --ignore_testing_code true --with_agent 2>&1 | tee dspace_oidc_scan.log
+          kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' dspace_oidc_scan.log | awk '{print $1}' | tail -n 1)
+          if [ -z "$kb_path" ]; then
+            echo "could not extract kb filename from scan log"
+            exit 1
+          fi
+          echo "dspace_oidc_kb_path=$kb_path" >> "$GITHUB_ENV"
+
+      - name: assert Java data-member facts on OidcRestController.java KB
+        run: |
+          # `log` is a class field ( OidcRestController.java:39 ) ; codegen
+          # lifts it into the scope of the class methods, so `log.error` at
+          # :73-75 resolves through the field's initializer type instead of
+          # `Unknown.error`. See tests/expected/facts/dspace/oidc_data_members.txt.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          echo "copying KB from queryengine:${dspace_oidc_kb_path}"
+          $compose cp "queryengine:${dspace_oidc_kb_path}" ./dspace_oidc_kb.pl
+          echo "KB lines: $(wc -l < dspace_oidc_kb.pl)"
+          missing=0
+          total=0
+          while IFS= read -r expected || [ -n "$expected" ]; do
+            expected=$(printf '%s' "$expected" | tr -d '\r')
+            [ -z "$expected" ] && continue
+            case "$expected" in \#*) continue ;; esac
+            total=$((total + 1))
+            if grep -Fqx "$expected" dspace_oidc_kb.pl; then
+              echo "  OK  : $expected"
+            else
+              echo "  MISS: $expected"
+              missing=$((missing + 1))
+            fi
+          done < tests/expected/facts/dspace/oidc_data_members.txt
+          echo "checked=$total missing=$missing"
+          unexpected="kb_call_resolved( startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, 'Unknown.error' )."
+          if grep -Fqx "$unexpected" dspace_oidc_kb.pl; then
+            echo "  UNEXPECTED: $unexpected"
+            missing=$((missing + 1))
+          fi
+          if [ "$missing" -gt 0 ]; then
+            echo "FAILED: $missing data-member fact check(s) failed"
+            exit 1
+          fi
+          rm -f dspace_oidc_kb.pl
+
       - name: scan full DSpace repo ( parser-coverage benchmark, --with_agent )
         run: |
           # Full-repo parser-coverage benchmark. Scans the entire DSpace
@@ -1365,4 +1424,4 @@ jobs:
           rm -f dspace_full_scan.log
 
       - name: remove DSpace tested code
-        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log
+        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log dspace_oidc_sample dspace_oidc_scan.log

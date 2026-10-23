@@ -1,0 +1,26 @@
+# Expected KB facts for a call on a Java class data member ( field ),
+# lifted into the scope of the class methods, in DSpace dspace-10.1 at:
+#
+#     dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java
+#
+#         private static final Logger log = LogManager.getLogger();   // line 39
+#         ...
+#         log.error("Invalid OIDC redirectURL={}."                    // line 73
+#                 + " URL doesn't match hostname of server or UI!",  // line 74
+#                 redirectUrl);                                      // line 75
+#
+#   1. kb_call_resolved  : log.error resolves through the field's initializer
+#                          type ( it was 'Unknown.error' while fields were dropped )
+#   2. kb_arg_i_for_call : arg 0 ( the message ) and arg 1 ( redirectUrl, defined at :54 )
+#                          are still wired to the call
+#   3. kb_const_string   : arg 0 is the concatenated literal
+#
+# The CI step also asserts the 'Unknown.error' fact for the same call is ABSENT.
+#
+# Lines starting with '#' and blank lines are ignored by the CI checker.
+# Every remaining line must appear verbatim in the queryengine's KB file.
+
+kb_call_resolved( startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, 'org.apache.logging.log4j.LogManager.getLogger.error' ).
+kb_arg_i_for_call( startloc_73_23_endloc_74_69_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, 0, startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
+kb_const_string( startloc_73_23_endloc_74_69_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, 'Invalid OIDC redirectURL={}. URL doesn\'t match hostname of server or UI!' ).
+kb_arg_i_for_call( startloc_54_13_endloc_54_85_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, 1, startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
