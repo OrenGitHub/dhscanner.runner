@@ -107,11 +107,13 @@ Hard constraints:
   `email_token`). Pair-edges go to the front of the queue by default.
 * Narrating the counts snapshot in `reason_for_verdict` is encouraged
   (base rates, anomalies) \u2014 but you cannot mutate it.
-* A sink reached by user input is not a finding yet: check whether an
-  `if` guards it (`BranchGuardedCall` on the sink call). A sink whose
-  sibling branch returns an error is evidence of a guard \u2014 read the
-  condition and the error string, judge whether the condition really
-  restricts the input, and cite both in `reason_for_verdict`.
+* A sink reached by user input is not a finding yet: check whether the
+  input is checked before it (`BranchGuardedCall` on the sink call and
+  the user input). A match means an `if` checks the input and rejects
+  it with an error on the other branch \u2014 judge from the condition's
+  fqn and the `userInputFlow` steps whether the check really restricts
+  the input (eg exact host match vs prefix match), and cite the
+  condition and the error string in `reason_for_verdict`.
 """
 
 
@@ -197,10 +199,14 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "\n"
     "  BranchGuardedCall:\n"
     "    { branchGuardedCallCall: Location,\n"
+    "      branchGuardedCallUserInput: Location,\n"
     "      branchGuardedCallLimit: int }\n"
-    "    -> every `if` whose then/else branch holds the call: the\n"
-    "       condition (location + fqn) and the calls on the OTHER\n"
-    "       branch, with their const-string args.\n"
+    "    -> every `if` that checks the user input before the call:\n"
+    "       the condition is a call, the user input flows into one of\n"
+    "       its args (`userInputFlow`, each step with its fqn), one\n"
+    "       branch holds the call and the OTHER branch holds an error\n"
+    "       call (`errorCalls`, with their const-string args). An empty\n"
+    "       guards list means no such check.\n"
     "\n"
     "The endpoint on your desk carries its `handler_location`: that is "
     "the Location you want for the *From/Caller/Location field of "

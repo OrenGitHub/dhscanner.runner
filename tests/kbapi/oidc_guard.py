@@ -37,6 +37,9 @@ HANDLER = location(52, 5, 80, 6)
 USER_INPUT = location(54, 13, 54, 85)
 SINK = location(71, 13, 71, 47)
 CONDITION = location(69, 13, 69, 92)
+HOST_NAME = location(60, 35, 60, 65)
+HOST_NAME_VAR = location(60, 9, 60, 66)
+LOG_ERROR = location(73, 13, 75, 33)
 ERROR_RESPONSE = location(76, 13, 77, 89)
 ERROR_MESSAGE = "Invalid redirectURL! Must match server or ui hostname."
 
@@ -93,25 +96,52 @@ def check_dataflow(kb_location: str) -> list[str]:
     return []
 
 
-def check_guard(kb_location: str) -> list[str]:
+def guards(kb_location: str, user_input: dict[str, typing.Any]) -> list[dict[str, typing.Any]]:
     reply = query(kb_location, "BranchGuardedCall", {
         "branchGuardedCallCall": SINK,
+        "branchGuardedCallUserInput": user_input,
         "branchGuardedCallLimit": 10,
     })
-    for guard in reply["foundBranchGuardedCallGuards"]:
+    found: list[dict[str, typing.Any]] = reply["foundBranchGuardedCallGuards"]
+    return found
+
+
+def check_guard(kb_location: str) -> list[str]:
+    for guard in guards(kb_location, USER_INPUT):
         if guard["branchGuardConditionLocation"] != CONDITION:
             continue
+        failures = []
         if guard["branchGuardConditionQualifiedName"] != "org.apache.commons.lang3.Strings.CI.equalsAny":
-            return ["BranchGuardedCall: :69 condition does not resolve to Strings.CI.equalsAny"]
-        expected = {
+            failures.append("BranchGuardedCall: :69 condition does not resolve to Strings.CI.equalsAny")
+        if guard["branchGuardUserInputArgIndex"] != 0:
+            failures.append("BranchGuardedCall: redirectUrl does not reach arg 0 of the :69 condition")
+        flow = [
+            {"flowStepLocation": USER_INPUT, "flowStepQualifiedName": None},
+            {"flowStepLocation": HOST_NAME, "flowStepQualifiedName": "org.dspace.core.Utils.getHostName"},
+            {"flowStepLocation": HOST_NAME_VAR, "flowStepQualifiedName": None},
+        ]
+        if guard["branchGuardUserInputFlow"] != flow:
+            failures.append("BranchGuardedCall: user input flow is not :54 -> :60 getHostName -> redirectHostName")
+        error = {
             "branchCallLocation": ERROR_RESPONSE,
             "branchCallQualifiedName": "jakarta.servlet.http.HttpServletResponse.sendError",
             "branchCallConstStringArgs": [ERROR_MESSAGE],
         }
-        if expected not in guard["branchGuardOtherBranchCalls"]:
-            return ["BranchGuardedCall: no sendError + error message on the other branch"]
-        return []
+        if guard["branchGuardErrorCalls"] != [error]:
+            failures.append("BranchGuardedCall: error calls are not exactly the :76-77 sendError + message")
+        others = [call["branchCallLocation"] for call in guard["branchGuardOtherBranchCalls"]]
+        if others != [LOG_ERROR]:
+            failures.append("BranchGuardedCall: other branch calls are not exactly the :73-75 log.error")
+        return failures
     return ["BranchGuardedCall: no guard at :69"]
+
+
+def check_no_guard_without_flow(kb_location: str) -> list[str]:
+    # The sink itself does not flow into the :69 condition, so no guard
+    # matches it as the "user input".
+    if guards(kb_location, SINK):
+        return ["BranchGuardedCall: guard reported for an input that does not reach the condition"]
+    return []
 
 
 def main() -> int:
@@ -121,6 +151,7 @@ def main() -> int:
         + check_user_inputs(kb_location)
         + check_dataflow(kb_location)
         + check_guard(kb_location)
+        + check_no_guard_without_flow(kb_location)
     )
     for failure in failures:
         print(f"FAIL: {failure}")

@@ -1308,8 +1308,9 @@ jobs:
         run: |
           # The four queries the agent walks on GET /api/authn/oidc ( #105 ) :
           # reachable sendRedirect sink, redirectUrl user input, dataflow
-          # :54 -> :71, and the :69 equalsAny guard with the sendError
-          # message on its other branch. queryengine is internal to the
+          # :54 -> :71, and the :69 equalsAny guard : redirectUrl flows into
+          # its arg 0 ( through Utils.getHostName ) and the sendError
+          # message sits on its other branch. queryengine is internal to the
           # compose network, so the stdlib-only checker runs inside `app`.
           compose="docker compose \
             -f ./compose/compose.base.yaml \
