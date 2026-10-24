@@ -14,6 +14,7 @@ import enum
 import typing
 
 import pydantic
+from pydantic.json_schema import SkipJsonSchema
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +65,16 @@ class EndpointRef(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra="ignore")
 
-    method: typing.Literal["GET", "POST", "PUT"]
+    method: typing.Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
     url: str
     handler_location: Location
     bucket: EndpointBucket
+    # The handler's kbapi `UserInput`s ( RequestParamCtor, RequestObjectCtor,
+    # ... ), kept as free-form dicts for the same reason as auth_evidence.
+    # A user input's location is the `from` of a SelectDataFlowPath query.
+    # Left out of the LLM response schema : they come from the KB, never
+    # from the model ( and strict mode rejects an array of open maps ).
+    user_inputs: SkipJsonSchema[list[dict[str, typing.Any]]] = pydantic.Field(default_factory=list)
     # Only populated for bucket B. We keep it a free-form dict here so
     # the Haskell-side `AuthEvidence` tagged union (ByHeaderNullCheck /
     # ByAllButOneBadReturn / future constructors) round-trips without

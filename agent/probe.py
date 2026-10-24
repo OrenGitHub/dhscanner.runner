@@ -89,7 +89,7 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
                    help="kb filename on the queryengine (default: kb_XXXXXXXX1-2)")
     p.add_argument("--kbapi-url", default="http://localhost:3000/api",
                    help="queryengine endpoint (default: http://localhost:3000/api)")
-    p.add_argument("--method", default=None, choices=("GET", "POST", "PUT"),
+    p.add_argument("--method", default=None, choices=("GET", "POST", "PUT", "DELETE", "PATCH"),
                    help="HTTP method of the target endpoint (default: PUT, or GET with --handler-file)")
     p.add_argument("--url-endswith", default=_DEFAULT_URL_SUFFIX,
                    help=f"keep the one endpoint whose URL ends with this (default: {_DEFAULT_URL_SUFFIX!r})")
@@ -225,6 +225,50 @@ def _resolve_handler(kb_text: str, file_suffix: str, line: int) -> Location:
     return Location(filename=filename, lineStart=l1, colStart=c1, lineEnd=l2, colEnd=c2)
 
 
+# Spring binds these param annotations from the request, as in
+# `templates/templateHttpHandlers.pl` ( queryengine ).
+_SPRING_USER_INPUTS: typing.Final[dict[str, str]] = {
+    "org.springframework.web.bind.annotation.RequestParam": "RequestParamCtor",
+    "org.springframework.web.bind.annotation.PathVariable": "PathVariableCtor",
+    "org.springframework.web.bind.annotation.RequestBody": "RequestBodyCtor",
+    "org.springframework.web.bind.annotation.RequestHeader": "RequestHeaderCtor",
+    "org.springframework.web.bind.annotation.CookieValue": "CookieValueCtor",
+    "org.springframework.web.bind.annotation.RequestPart": "RequestPartCtor",
+}
+_PARAM_I_OF_CALLABLE = re.compile(r"^kb_param_i_of_callable\( (startloc_\S+), (\d+), (startloc_\S+) \)\.")
+_PARAM_HAS_ANNOTATION = re.compile(r"^kb_param_has_annotation\( (startloc_\S+), (startloc_\S+) \)\.")
+_PARAM_HAS_NAME = re.compile(r"^kb_param_has_name\( (startloc_\S+), '(.*)' \)\.")
+_CALL_RESOLVED = re.compile(r"^kb_call_resolved\( (startloc_\S+), '(.*)' \)\.")
+
+
+def _resolve_user_inputs(kb_text: str, handler: Location) -> list[dict[str, typing.Any]]:
+    """The handler's spring user inputs, shaped like kbapi `UserInput`s."""
+    params: list[tuple[int, str]] = []
+    annotations: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    resolved: dict[str, str] = {}
+    for kb_line in kb_text.splitlines():
+        if (m := _PARAM_I_OF_CALLABLE.match(kb_line)) and _restore_location(m.group(3)) == handler:
+            params.append((int(m.group(2)), m.group(1)))
+        elif m := _PARAM_HAS_ANNOTATION.match(kb_line):
+            annotations.setdefault(m.group(1), []).append(m.group(2))
+        elif m := _PARAM_HAS_NAME.match(kb_line):
+            names[m.group(1)] = m.group(2)
+        elif m := _CALL_RESOLVED.match(kb_line):
+            resolved[m.group(1)] = m.group(2)
+    inputs: list[dict[str, typing.Any]] = []
+    for _, param in sorted(params):
+        loc = _restore_location(param)
+        tags = [_SPRING_USER_INPUTS[resolved[a]] for a in annotations.get(param, []) if resolved.get(a) in _SPRING_USER_INPUTS]
+        if loc is None or not tags:
+            continue
+        if tags[0] == "RequestParamCtor":
+            inputs.append({"tag": tags[0], "contents": {"requestParamName": names.get(param, ""), "requestParamLocation": loc.model_dump()}})
+        else:
+            inputs.append({"tag": tags[0], "contents": loc.model_dump()})
+    return inputs
+
+
 def _target_from_handler(args: argparse.Namespace) -> EndpointRef:
     kb_text = _read_kb(args.kb, args.kb_file, args.queryengine_container)
     handler = _resolve_handler(kb_text, args.handler_file, args.handler_line)
@@ -235,6 +279,7 @@ def _target_from_handler(args: argparse.Namespace) -> EndpointRef:
         url=args.url,
         handler_location=handler,
         bucket=EndpointBucket(args.bucket),
+        user_inputs=_resolve_user_inputs(kb_text, handler),
     )
 
 

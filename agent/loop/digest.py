@@ -117,25 +117,13 @@ class ScanDigest:
         """
         tag = kb_reply.get("tag")
         contents = kb_reply.get("contents") or {}
-        if tag == "FoundControlFlowReachableSqlSink":
-            # Shape per Content.hs \u2014
-            # FoundControlFlowReachableSqlSink { total, countsByKind, matches }
-            total = contents.get("foundControlFlowReachableSqlSinkTotal", 0)
+        if tag == "FoundControlFlowReachableSinks":
+            # WithControlFlowReachableSinks.Content { total, matches }
+            total = contents.get("total", 0)
             if isinstance(total, int):
                 self._sinks_seen += total
-            for kc in contents.get("foundControlFlowReachableSqlSinkCountsByKind") or []:
-                kind = (kc.get("sqlSinkKindCountKind") or "").strip() or "unknown"
-                cnt = kc.get("sqlSinkKindCountCount", 0)
-                if isinstance(cnt, int):
-                    self._sink_family[f"sql.{kind}"] += cnt
-        elif tag == "FoundControlFlowReachableFileActionSink":
-            total = contents.get("foundControlFlowReachableFileActionSinkTotal", 0)
-            if isinstance(total, int):
-                self._sinks_seen += total
-            for kc in contents.get("foundControlFlowReachableFileActionSinkCountsByKind") or []:
-                kind = (kc.get("fileActionKindCountKind") or "").strip() or "unknown"
-                cnt = kc.get("fileActionKindCountCount", 0)
-                if isinstance(cnt, int):
-                    self._sink_family[f"file_action.{kind}"] += cnt
+            for match in contents.get("matches") or []:
+                kind = (match.get("kind") or "").strip() or "unknown"
+                self._sink_family[kind] += 1
         # Future tags fold here as leaf-adds, same pattern. Unknown
         # tags intentionally do nothing \u2014 ScanTrace still has them.
