@@ -501,9 +501,9 @@ jobs:
           # the formbricks KB the earlier step just generated. Snapshots the
           # exact set of POST handlers formbricks v3.16.0 exposes today :
           #
-          #   - endpoints_unauthenticated_http_post/3
+          #   - endpoints_http/4 ( post ) without endpoints_http_auth/3
           #     -> 18 pre-auth POST handlers.
-          #   - endpoints_authenticated_http_post/5
+          #   - endpoints_http/4 ( post ) with endpoints_http_auth/3
           #     -> 2 authenticated POST handlers, both `checkAuth`-gated
           #     via the shape recognizer's `by_all_but_one_bad_return`
           #     AuthEvidence tag.
@@ -557,10 +557,10 @@ jobs:
                  dynamic(kb_gated_return/2), \
                  dynamic(kb_const_null/1), \
                  consult('${formbricks_kb_path}'), \
-                 findall(U, endpoints_unauthenticated_http_post(_, _, U), UN), \
+                 findall(U, ( endpoints_http(H, post, _, U), \\+ endpoints_http_auth(H, _, _) ), UN), \
                  sort(UN, SUN), \
                  forall(member(U, SUN), format('UNAUTH: ~w~n', [U])), \
-                 findall(U-Fn-Ev, endpoints_authenticated_http_post(_, _, U, Fn, Ev), AU), \
+                 findall(U-Fn-Ev, ( endpoints_http(H, post, _, U), endpoints_http_auth(H, Fn, Ev) ), AU), \
                  sort(AU, SAU), \
                  forall(member(U-Fn-Ev, SAU), format('AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
                  halt(0)"
@@ -652,22 +652,22 @@ jobs:
                  dynamic(kb_gated_return/2), \
                  dynamic(kb_const_null/1), \
                  consult('${formbricks_kb_path}'), \
-                 findall(U, endpoints_unauthenticated_http_get(_, _, U), GUN), \
+                 findall(U, ( endpoints_http(H, get, _, U), \\+ endpoints_http_auth(H, _, _) ), GUN), \
                  sort(GUN, SGUN), \
                  forall(member(U, SGUN), format('GET UNAUTH: ~w~n', [U])), \
-                 findall(U-Fn-Ev, endpoints_authenticated_http_get(_, _, U, Fn, Ev), GAU), \
+                 findall(U-Fn-Ev, ( endpoints_http(H, get, _, U), endpoints_http_auth(H, Fn, Ev) ), GAU), \
                  sort(GAU, SGAU), \
                  forall(member(U-Fn-Ev, SGAU), format('GET AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
-                 findall(U, endpoints_unauthenticated_http_post(_, _, U), PUN), \
+                 findall(U, ( endpoints_http(H, post, _, U), \\+ endpoints_http_auth(H, _, _) ), PUN), \
                  sort(PUN, SPUN), \
                  forall(member(U, SPUN), format('POST UNAUTH: ~w~n', [U])), \
-                 findall(U-Fn-Ev, endpoints_authenticated_http_post(_, _, U, Fn, Ev), PAU), \
+                 findall(U-Fn-Ev, ( endpoints_http(H, post, _, U), endpoints_http_auth(H, Fn, Ev) ), PAU), \
                  sort(PAU, SPAU), \
                  forall(member(U-Fn-Ev, SPAU), format('POST AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
-                 findall(U, endpoints_unauthenticated_http_put(_, _, U), UUN), \
+                 findall(U, ( endpoints_http(H, put, _, U), \\+ endpoints_http_auth(H, _, _) ), UUN), \
                  sort(UUN, SUUN), \
                  forall(member(U, SUUN), format('PUT UNAUTH: ~w~n', [U])), \
-                 findall(U-Fn-Ev, endpoints_authenticated_http_put(_, _, U, Fn, Ev), UAU), \
+                 findall(U-Fn-Ev, ( endpoints_http(H, put, _, U), endpoints_http_auth(H, Fn, Ev) ), UAU), \
                  sort(UAU, SUAU), \
                  forall(member(U-Fn-Ev, SUAU), format('PUT AUTH:   ~w  fn=~w  ev=~w~n', [U, Fn, Ev])), \
                  halt(0)"
