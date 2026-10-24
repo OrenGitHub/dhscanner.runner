@@ -14,6 +14,15 @@ Usage ( from the repo root, with the compose stack already up ):
     python -m agent.probe --kb kb_XXXXXXXX1-2 \
         --url-endswith v2/management/contacts/bulk \
         --method PUT
+
+Handlers the seeder cannot find ( eg a spring `@RequestMapping` whose
+verb or url the KB does not resolve yet ) go straight on the desk by
+location instead. The handler's exact span is looked up in a local copy
+of the KB ( `--kb-file`, or `docker cp` out of the queryengine container ):
+
+    python -m agent.probe --kb kb_XXXXXXXX1-4 \
+        --handler-file OidcRestController.java --handler-line 52 \
+        --method GET --url /api/authn/oidc
 """
 
 from __future__ import annotations
@@ -21,7 +30,10 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
+import subprocess
 import sys
+import tempfile
 import typing
 
 # Make the repo root importable so `agent.loop.*` resolves without
@@ -57,7 +69,7 @@ from agent.loop.session import (
     run_item_session,
 )
 from agent.loop.trace import ScanTrace, default_trace_root
-from agent.loop.types import EndpointRef
+from agent.loop.types import EndpointBucket, EndpointRef, Location
 
 
 _DEFAULT_URL_SUFFIX = "modules/ee/contacts/api/v2/management/contacts/bulk"
@@ -77,10 +89,24 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
                    help="kb filename on the queryengine (default: kb_XXXXXXXX1-2)")
     p.add_argument("--kbapi-url", default="http://localhost:3000/api",
                    help="queryengine endpoint (default: http://localhost:3000/api)")
-    p.add_argument("--method", default="PUT", choices=("GET", "POST", "PUT"),
-                   help="HTTP method of the target endpoint (default: PUT)")
+    p.add_argument("--method", default=None, choices=("GET", "POST", "PUT", "DELETE", "PATCH"),
+                   help="HTTP method of the target endpoint (default: PUT, or GET with --handler-file)")
     p.add_argument("--url-endswith", default=_DEFAULT_URL_SUFFIX,
                    help=f"keep the one endpoint whose URL ends with this (default: {_DEFAULT_URL_SUFFIX!r})")
+    p.add_argument("--handler-file", default=None,
+                   help="bypass the seeder: put the handler defined in the file ending with this on the desk")
+    p.add_argument("--handler-line", type=int, default=None,
+                   help="line where the --handler-file handler starts (its first annotation, if any)")
+    p.add_argument("--url", default="{?}",
+                   help="url label for a --handler-file endpoint (default: '{?}')")
+    p.add_argument("--bucket", default=EndpointBucket.PRE_AUTH.value,
+                   choices=[b.value for b in EndpointBucket],
+                   help="bucket label for a --handler-file endpoint (default: pre_auth)")
+    p.add_argument("--kb-file", default=None,
+                   help="local copy of the KB used to resolve --handler-file "
+                        "(default: docker cp it out of --queryengine-container)")
+    p.add_argument("--queryengine-container", default="compose-queryengine-1",
+                   help="container holding /tmp/<kb>.pl (default: compose-queryengine-1)")
     p.add_argument("--model", default=None,
                    help="override OPENAI_MODEL / default gpt-5")
     p.add_argument("--kbapi-query-budget", type=int, default=DEFAULT_KBAPI_QUERY_BUDGET,
@@ -91,7 +117,12 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
                    help=f"per-session wall-clock bound (default: {DEFAULT_WALL_CLOCK_SECONDS:.0f})")
     p.add_argument("--openai-timeout-s", type=float, default=DEFAULT_OPENAI_TIMEOUT_SECONDS,
                    help=f"per-openai-call timeout (default: {DEFAULT_OPENAI_TIMEOUT_SECONDS:.0f})")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if (args.handler_file is None) != (args.handler_line is None):
+        p.error("--handler-file and --handler-line go together")
+    if args.method is None:
+        args.method = "PUT" if args.handler_file is None else "GET"
+    return args
 
 
 def _find_target(kbapi: KbapiClient, method: str, url_endswith: str) -> EndpointRef:
@@ -125,6 +156,131 @@ def _find_target(kbapi: KbapiClient, method: str, url_endswith: str) -> Endpoint
             print(f"  {marker} {r.handler_location.filename}:{r.handler_location.lineStart} "
                   f"(bucket={r.bucket.value})", file=sys.stderr)
     return matches[0]
+
+
+# Callable locations as they appear in KB facts. A kbgen location atom is
+# `startloc_<line>_<col>_endloc_<line>_<col>_<normalized filename>`.
+_CALLABLE_ATOM_PATTERNS: typing.Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"^kb_called_from\( \S+, (startloc_\S+) \)\."),
+    re.compile(r"^kb_param_i_of_callable\( \S+, \d+, (startloc_\S+) \)\."),
+    re.compile(r"^kb_method_of_class\( (startloc_\S+), "),
+    re.compile(r"^kb_func_def\( (startloc_\S+), "),
+    re.compile(r"^kb_callable_has_annotation\( (startloc_\S+), "),
+)
+_LOCATION_ATOM = re.compile(r"^startloc_(\d+)_(\d+)_endloc_(\d+)_(\d+)_(.+)$")
+# Inverse of kbgen's filename normalization ( `Kbgen.restoreloc` ).
+_FILENAME_RULES: typing.Final[tuple[tuple[str, str], ...]] = (
+    ("_slash_", "/"), ("_dot_", "."), ("_dash_", "-"),
+    ("_lbrack_", "["), ("_rbrack_", "]"), ("_lparen_", "("), ("_rparen_", ")"),
+)
+
+
+def _restore_location(atom: str) -> typing.Optional[Location]:
+    m = _LOCATION_ATOM.match(atom)
+    if m is None:
+        return None
+    filename = m.group(5)
+    for normalized, original in _FILENAME_RULES:
+        filename = filename.replace(normalized, original)
+    return Location(
+        filename=filename,
+        lineStart=int(m.group(1)), colStart=int(m.group(2)),
+        lineEnd=int(m.group(3)), colEnd=int(m.group(4)),
+    )
+
+
+def _read_kb(kb: str, kb_file: typing.Optional[str], container: str) -> str:
+    if kb_file is not None:
+        return pathlib.Path(kb_file).read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = pathlib.Path(tmp) / f"{kb}.pl"
+        print(f"[probe] copying {container}:/tmp/{kb}.pl to resolve the handler ...")
+        subprocess.run(["docker", "cp", f"{container}:/tmp/{kb}.pl", str(local)], check=True)
+        return local.read_text(encoding="utf-8")
+
+
+def _resolve_handler(kb_text: str, file_suffix: str, line: int) -> Location:
+    """The callable starting at ``line`` of the file ending with ``file_suffix``.
+
+    Nested callables can share a start line ( eg a lambda on the
+    method's first line ), so the widest span wins.
+    """
+    callables: set[tuple[str, int, int, int, int]] = set()
+    for kb_line in kb_text.splitlines():
+        for pattern in _CALLABLE_ATOM_PATTERNS:
+            m = pattern.match(kb_line)
+            if m is not None:
+                loc = _restore_location(m.group(1))
+                if loc is not None and loc.filename.endswith(file_suffix):
+                    callables.add((loc.filename, loc.lineStart, loc.colStart, loc.lineEnd, loc.colEnd))
+                break
+    matches = [c for c in callables if c[1] == line]
+    if not matches:
+        print(f"[probe] no callable starts at {file_suffix}:{line}; callables in matching files:",
+              file=sys.stderr)
+        for filename, l1, c1, l2, c2 in sorted(callables):
+            print(f"  * {filename}:{l1}:{c1}-{l2}:{c2}", file=sys.stderr)
+        raise SystemExit(2)
+    filename, l1, c1, l2, c2 = max(matches, key=lambda c: (c[3] - c[1], c[4] - c[2]))
+    return Location(filename=filename, lineStart=l1, colStart=c1, lineEnd=l2, colEnd=c2)
+
+
+# Spring binds these param annotations from the request, as in
+# `templates/templateHttpHandlers.pl` ( queryengine ).
+_SPRING_USER_INPUTS: typing.Final[dict[str, str]] = {
+    "org.springframework.web.bind.annotation.RequestParam": "RequestParamCtor",
+    "org.springframework.web.bind.annotation.PathVariable": "PathVariableCtor",
+    "org.springframework.web.bind.annotation.RequestBody": "RequestBodyCtor",
+    "org.springframework.web.bind.annotation.RequestHeader": "RequestHeaderCtor",
+    "org.springframework.web.bind.annotation.CookieValue": "CookieValueCtor",
+    "org.springframework.web.bind.annotation.RequestPart": "RequestPartCtor",
+}
+_PARAM_I_OF_CALLABLE = re.compile(r"^kb_param_i_of_callable\( (startloc_\S+), (\d+), (startloc_\S+) \)\.")
+_PARAM_HAS_ANNOTATION = re.compile(r"^kb_param_has_annotation\( (startloc_\S+), (startloc_\S+) \)\.")
+_PARAM_HAS_NAME = re.compile(r"^kb_param_has_name\( (startloc_\S+), '(.*)' \)\.")
+_CALL_RESOLVED = re.compile(r"^kb_call_resolved\( (startloc_\S+), '(.*)' \)\.")
+
+
+def _resolve_user_inputs(kb_text: str, handler: Location) -> list[dict[str, typing.Any]]:
+    """The handler's spring user inputs, shaped like kbapi `UserInput`s."""
+    params: list[tuple[int, str]] = []
+    annotations: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    resolved: dict[str, str] = {}
+    for kb_line in kb_text.splitlines():
+        if (m := _PARAM_I_OF_CALLABLE.match(kb_line)) and _restore_location(m.group(3)) == handler:
+            params.append((int(m.group(2)), m.group(1)))
+        elif m := _PARAM_HAS_ANNOTATION.match(kb_line):
+            annotations.setdefault(m.group(1), []).append(m.group(2))
+        elif m := _PARAM_HAS_NAME.match(kb_line):
+            names[m.group(1)] = m.group(2)
+        elif m := _CALL_RESOLVED.match(kb_line):
+            resolved[m.group(1)] = m.group(2)
+    inputs: list[dict[str, typing.Any]] = []
+    for _, param in sorted(params):
+        loc = _restore_location(param)
+        tags = [_SPRING_USER_INPUTS[resolved[a]] for a in annotations.get(param, []) if resolved.get(a) in _SPRING_USER_INPUTS]
+        if loc is None or not tags:
+            continue
+        if tags[0] == "RequestParamCtor":
+            inputs.append({"tag": tags[0], "contents": {"requestParamName": names.get(param, ""), "requestParamLocation": loc.model_dump()}})
+        else:
+            inputs.append({"tag": tags[0], "contents": loc.model_dump()})
+    return inputs
+
+
+def _target_from_handler(args: argparse.Namespace) -> EndpointRef:
+    kb_text = _read_kb(args.kb, args.kb_file, args.queryengine_container)
+    handler = _resolve_handler(kb_text, args.handler_file, args.handler_line)
+    print(f"[probe] handler resolved: {handler.filename}:{handler.lineStart}:{handler.colStart}"
+          f"-{handler.lineEnd}:{handler.colEnd}")
+    return EndpointRef(
+        method=args.method,
+        url=args.url,
+        handler_location=handler,
+        bucket=EndpointBucket(args.bucket),
+        user_inputs=_resolve_user_inputs(kb_text, handler),
+    )
 
 
 def _print_endpoint(ref: EndpointRef) -> None:
@@ -177,7 +333,10 @@ def main(argv: typing.Optional[list[str]] = None) -> int:
         return 2
 
     kbapi = KbapiClient(args.kb, url=args.kbapi_url)
-    target = _find_target(kbapi, args.method, args.url_endswith)
+    if args.handler_file is not None:
+        target = _target_from_handler(args)
+    else:
+        target = _find_target(kbapi, args.method, args.url_endswith)
     _print_endpoint(target)
 
     # Minimal replica of run_scan's wiring, but with:
@@ -240,6 +399,28 @@ class _LiveHook:
     def __init__(self, trace: ScanTrace, item_id: int) -> None:
         self._trace = trace
         self._item_id = item_id
+
+    def llm_round(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        round_index: int,
+        *,
+        content: str,
+        finish_reason: typing.Optional[str],
+        tool_calls: list[dict[str, typing.Any]],
+        reasoning_tokens: typing.Optional[int],
+    ) -> None:
+        self._trace.llm_round(
+            self._item_id,
+            round_index,
+            content=content,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            reasoning_tokens=reasoning_tokens,
+        )
+        tc_names = ",".join(tc.get("name", "?") for tc in tool_calls) or "<none>"
+        snippet = (content[:70] + "\u2026") if len(content) > 70 else content
+        rt = f" reasoning_tokens={reasoning_tokens}" if reasoning_tokens is not None else ""
+        print(f"  [llm #{round_index}] finish={finish_reason!r} tools=[{tc_names}]{rt} content={snippet!r}")
 
     def kbapi_call(self, call_index: int, query: dict[str, typing.Any]) -> None:
         self._trace.kbapi_call(self._item_id, call_index, query)

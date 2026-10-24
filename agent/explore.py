@@ -20,10 +20,10 @@ from cli.argparse_wrapper import ExploreWithAgentArgparse as Argparse
 QUERYENGINE_API_URL: typing.Final[str] = 'http://localhost:3000/api'
 
 DEFAULT_QUERY_BODY: typing.Final[dict[str, typing.Any]] = {
-    'tag': 'ConstStringsMatching',
+    'tag': 'SelectConstStrings',
     'contents': {
-        'constStringsMatchingThisRegex': '.*',
-        'constStringsMatchingLimit': 200,
+        'matchingRegex': '.*',
+        'maxNumConstStrings': 200,
     },
 }
 

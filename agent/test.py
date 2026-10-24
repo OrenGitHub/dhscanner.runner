@@ -20,27 +20,21 @@ except ModuleNotFoundError as exc:
 
 QUERYENGINE_API_URL: typing.Final[str] = 'http://localhost:3000/api'
 
-CONST_STRINGS_MATCHING_QUERY: typing.Final[dict[str, typing.Any]] = {
-    'tag': 'ConstStringsMatching',
+CONST_STRINGS_QUERY: typing.Final[dict[str, typing.Any]] = {
+    'tag': 'SelectConstStrings',
     'contents': {
-        'constStringsMatchingThisRegex': '.*',
-        'constStringsMatchingLimit': 7,
+        'matchingRegex': '.*',
+        'maxNumConstStrings': 7,
     },
 }
 
-HTTP_POST_HANDLER_REQUEST_OBJECT_QUERY: typing.Final[dict[str, typing.Any]] = {
-    'tag': 'HttpPostHandlerRequestObject',
+HTTP_HANDLERS_QUERY: typing.Final[dict[str, typing.Any]] = {
+    'tag': 'SelectHttpHandlers',
     'contents': {
-        'httpPostHandlerRequestObjectUrlParts': [],
-        'httpPostHandlerRequestObjectLimit': 5,
-    },
-}
-
-HTTP_GET_HANDLER_REQUEST_OBJECT_QUERY: typing.Final[dict[str, typing.Any]] = {
-    'tag': 'HttpGetHandlerRequestObject',
-    'contents': {
-        'httpGetHandlerRequestObjectUrlParts': [],
-        'httpGetHandlerRequestObjectLimit': 5,
+        'verbs': ['Get', 'Post'],
+        'authentications': ['Unauthenticated', 'Authenticated'],
+        'routeContainsUrlParts': None,
+        'maxNumHttpHandlers': 5,
     },
 }
 
@@ -52,8 +46,8 @@ logging.basicConfig(
 )
 
 
-def valid_const_strings_response(response_json: dict[str, typing.Any]) -> bool:
-    if response_json.get('tag') != 'FoundConstStringsMatching':
+def valid_response(response_json: dict[str, typing.Any], expected_tag: str, location_field: str) -> bool:
+    if response_json.get('tag') != expected_tag:
         logging.error('unexpected tag in response: %s', response_json.get('tag'))
         return False
 
@@ -62,30 +56,30 @@ def valid_const_strings_response(response_json: dict[str, typing.Any]) -> bool:
         logging.error('response contents is missing or invalid')
         return False
 
-    regex = contents.get('foundConstStringsMatchingThisRegex')
-    total = contents.get('foundConstStringsMatchesTotal')
-    matches = contents.get('foundConstStringsMatches')
+    total = contents.get('total')
+    matches = contents.get('matches')
 
-    if not isinstance(regex, str):
-        logging.error('invalid foundConstStringsMatchingThisRegex: %s', regex)
-        return False
     if not isinstance(total, int):
-        logging.error('invalid foundConstStringsMatchesTotal: %s', total)
+        logging.error('invalid total: %s', total)
         return False
     if not isinstance(matches, list):
-        logging.error('invalid foundConstStringsMatches: %s', matches)
+        logging.error('invalid matches: %s', matches)
         return False
+
+    for i, match in enumerate(matches, start=1):
+        if not isinstance(match, dict) or not is_valid_location(match.get(location_field)):
+            logging.error('match #%s has an invalid %s', i, location_field)
+            return False
 
     return True
 
 
 def log_const_strings_preview(response_json: dict[str, typing.Any], preview_limit: int = 10) -> None:
     contents = response_json['contents']
-    total = contents['foundConstStringsMatchesTotal']
-    matches = contents['foundConstStringsMatches']
-    regex = contents['foundConstStringsMatchingThisRegex']
+    total = contents['total']
+    matches = contents['matches']
 
-    logging.info('[ test ] regex used: %s', regex)
+    logging.info('[ test ] regex used: %s', CONST_STRINGS_QUERY['contents']['matchingRegex'])
     logging.info('[ test ] total matched strings: %s', total)
 
     if not matches:
@@ -94,10 +88,24 @@ def log_const_strings_preview(response_json: dict[str, typing.Any], preview_limi
 
     logging.info('[ test ] showing first %s matches:', min(preview_limit, len(matches)))
     for i, match in enumerate(matches[:preview_limit], start=1):
-        value = match.get('foundConstStringMatchValue', '<missing value>')
-        location = match.get('foundConstStringMatchLocation', {})
-        filename = location.get('filename', '<unknown file>')
-        logging.info('  #%s value=%s file=%s', i, value, filename)
+        logging.info('  #%s value=%s file=%s', i, match['value'], match['location']['filename'])
+
+
+def log_http_handlers_preview(response_json: dict[str, typing.Any], preview_limit: int = 10) -> None:
+    contents = response_json['contents']
+    total = contents['total']
+    matches = contents['matches']
+
+    logging.info('[ test ] total http handlers: %s', total)
+
+    if not matches:
+        logging.info('[ test ] no http handlers matched')
+        return
+
+    logging.info('[ test ] showing first %s matches:', min(preview_limit, len(matches)))
+    for i, match in enumerate(matches[:preview_limit], start=1):
+        logging.info('  #%s %s %s', i, match.get('httpHandlerVerb'), match.get('httpHandlerUrl'))
+        logging.info('%s', format_location(match['httpHandlerLocation'], indent='      '))
 
 
 def is_valid_location(location: typing.Any) -> bool:
@@ -132,163 +140,6 @@ def format_location(location: typing.Any, indent: str = '') -> str:
     return '\n'.join(f'{indent}{line}' for line in lines)
 
 
-# pylint: disable=too-many-return-statements
-def valid_http_post_handler_request_object_response(response_json: dict[str, typing.Any]) -> bool:
-    if response_json.get('tag') != 'FoundHttpPostHandlerRequestObject':
-        logging.error('unexpected tag in response: %s', response_json.get('tag'))
-        return False
-
-    contents = response_json.get('contents')
-    if not isinstance(contents, dict):
-        logging.error('response contents is missing or invalid')
-        return False
-
-    total = contents.get('foundHttpPostHandlerRequestObjectTotal')
-    matches = contents.get('foundHttpPostHandlerRequestObjectMatches')
-
-    if not isinstance(total, int):
-        logging.error('invalid foundHttpPostHandlerRequestObjectTotal: %s', total)
-        return False
-    if not isinstance(matches, list):
-        logging.error('invalid foundHttpPostHandlerRequestObjectMatches: %s', matches)
-        return False
-
-    for i, match in enumerate(matches, start=1):
-        if not isinstance(match, dict):
-            logging.error('match #%s is invalid: %s', i, match)
-            return False
-
-        post_handler = match.get('foundHttpPostHandlerLocation')
-        request = match.get('foundHttpPostHandlerRequestObjectLocation')
-        url = match.get('foundHttpPostHandlerRequestObjectMatchUrl')
-
-        if not is_valid_location(post_handler):
-            logging.error('invalid post handler location in match #%s: %s', i, post_handler)
-            return False
-        if not is_valid_location(request):
-            logging.error('invalid request location in match #%s: %s', i, request)
-            return False
-        if not isinstance(url, str):
-            logging.error('invalid url in match #%s: %s', i, url)
-            return False
-
-    return True
-
-
-def log_http_post_handler_request_object_preview(
-    response_json: dict[str, typing.Any],
-    preview_limit: int = 10,
-) -> None:
-    contents = response_json['contents']
-    total = contents['foundHttpPostHandlerRequestObjectTotal']
-    matches = contents['foundHttpPostHandlerRequestObjectMatches']
-
-    logging.info('[ test ] total post-handler request objects: %s', total)
-
-    if not matches:
-        logging.info('[ test ] no http post handler request objects matched')
-        return
-
-    logging.info('[ test ] showing first %s matches:', min(preview_limit, len(matches)))
-    for i, match in enumerate(matches[:preview_limit], start=1):
-        url = match.get('foundHttpPostHandlerRequestObjectMatchUrl', '<missing url>')
-        post_handler = match.get('foundHttpPostHandlerLocation', {})
-        request = match.get('foundHttpPostHandlerRequestObjectLocation', {})
-        logging.info(
-            '  #%s url=%s\n'
-            '     post_handler\n'
-            '%s\n'
-            '     request_object\n'
-            '%s',
-            i,
-            url,
-            format_location(post_handler, indent='        '),
-            format_location(request, indent='        '),
-        )
-
-
-# pylint: disable=too-many-return-statements
-def valid_http_get_handler_request_object_response(response_json: dict[str, typing.Any]) -> bool:
-    tag = response_json.get('tag')
-    if tag != 'FoundHttpGetHandlerRequestObject':
-        if tag == 'FoundConstStringsMatching':
-            logging.error(
-                'HttpGetHandlerRequestObject query fell back to FoundConstStringsMatching. '
-                'The running queryengine likely does not include GET handler routing yet. '
-                'Rebuild/restart queryengine from the updated source.'
-            )
-        logging.error('unexpected tag in response: %s', tag)
-        return False
-
-    contents = response_json.get('contents')
-    if not isinstance(contents, dict):
-        logging.error('response contents is missing or invalid')
-        return False
-
-    total = contents.get('foundHttpGetHandlerRequestObjectTotal')
-    matches = contents.get('foundHttpGetHandlerRequestObjectMatches')
-
-    if not isinstance(total, int):
-        logging.error('invalid foundHttpGetHandlerRequestObjectTotal: %s', total)
-        return False
-    if not isinstance(matches, list):
-        logging.error('invalid foundHttpGetHandlerRequestObjectMatches: %s', matches)
-        return False
-
-    for i, match in enumerate(matches, start=1):
-        if not isinstance(match, dict):
-            logging.error('match #%s is invalid: %s', i, match)
-            return False
-
-        handler = match.get('foundHttpGetHandlerLocation')
-        request = match.get('foundHttpGetHandlerRequestObjectMatchLocation')
-        url = match.get('foundHttpGetHandlerRequestObjectMatchUrl')
-
-        if not is_valid_location(handler):
-            logging.error('invalid get handler location in match #%s: %s', i, handler)
-            return False
-        if not is_valid_location(request):
-            logging.error('invalid request location in match #%s: %s', i, request)
-            return False
-        if not isinstance(url, str):
-            logging.error('invalid url in match #%s: %s', i, url)
-            return False
-
-    return True
-
-
-def log_http_get_handler_request_object_preview(
-    response_json: dict[str, typing.Any],
-    preview_limit: int = 10,
-) -> None:
-    contents = response_json['contents']
-    total = contents['foundHttpGetHandlerRequestObjectTotal']
-    matches = contents['foundHttpGetHandlerRequestObjectMatches']
-
-    logging.info('[ test ] total get-handler request objects: %s', total)
-
-    if not matches:
-        logging.info('[ test ] no http get handler request objects matched')
-        return
-
-    logging.info('[ test ] showing first %s matches:', min(preview_limit, len(matches)))
-    for i, match in enumerate(matches[:preview_limit], start=1):
-        url = match.get('foundHttpGetHandlerRequestObjectMatchUrl', '<missing url>')
-        handler = match.get('foundHttpGetHandlerLocation', {})
-        request = match.get('foundHttpGetHandlerRequestObjectMatchLocation', {})
-        logging.info(
-            '  #%s url=%s\n'
-            '     handler\n'
-            '%s\n'
-            '     request_object\n'
-            '%s',
-            i,
-            url,
-            format_location(handler, indent='        '),
-            format_location(request, indent='        '),
-        )
-
-
 def run_query(kb_filename: str, query: dict[str, typing.Any]) -> typing.Optional[dict[str, typing.Any]]:
     params = {'kb_location': kb_filename}
 
@@ -316,39 +167,29 @@ def run_query(kb_filename: str, query: dict[str, typing.Any]) -> typing.Optional
 
 
 def main(parsed_args: Argparse) -> int:
-    logging.info('[ test ] sending ConstStringsMatching query')
-    if not (const_strings_response := run_query(parsed_args.use_kb, CONST_STRINGS_MATCHING_QUERY)):
+    logging.info('[ test ] sending SelectConstStrings query')
+    if not (const_strings_response := run_query(parsed_args.use_kb, CONST_STRINGS_QUERY)):
         return 1
 
-    if not valid_const_strings_response(const_strings_response):
+    if not valid_response(const_strings_response, 'FoundConstStringsMatching', 'location'):
         return 1
 
     log_const_strings_preview(const_strings_response)
 
-    logging.info('[ test ] sending HttpPostHandlerRequestObject query')
-    if not (post_handler_response := run_query(parsed_args.use_kb, HTTP_POST_HANDLER_REQUEST_OBJECT_QUERY)):
+    logging.info('[ test ] sending SelectHttpHandlers query')
+    if not (http_handlers_response := run_query(parsed_args.use_kb, HTTP_HANDLERS_QUERY)):
         return 1
 
-    if not valid_http_post_handler_request_object_response(post_handler_response):
+    if not valid_response(http_handlers_response, 'FoundHttpHandlers', 'httpHandlerLocation'):
         return 1
 
-    log_http_post_handler_request_object_preview(post_handler_response)
-
-    logging.info('[ test ] sending HttpGetHandlerRequestObject query')
-    if not (get_handler_response := run_query(parsed_args.use_kb, HTTP_GET_HANDLER_REQUEST_OBJECT_QUERY)):
-        return 1
-
-    if not valid_http_get_handler_request_object_response(get_handler_response):
-        return 1
-
-    log_http_get_handler_request_object_preview(get_handler_response)
+    log_http_handlers_preview(http_handlers_response)
 
     with parsed_args.save_sarif_to.open('w', encoding='utf-8') as fl:
         json.dump(
             {
-                'constStringsMatching': const_strings_response,
-                'httpPostHandlerRequestObject': post_handler_response,
-                'httpGetHandlerRequestObject': get_handler_response,
+                'constStrings': const_strings_response,
+                'httpHandlers': http_handlers_response,
             },
             fl,
         )
