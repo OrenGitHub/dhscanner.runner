@@ -1,0 +1,28 @@
+# Expected top level if-then-else gadget facts for the guarded open redirect
+# in DSpace dspace-10.1 at:
+#
+#     dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java
+#
+#     public void oidc( ... ) {                                       // lines 52-80
+#         ...
+#         if (Strings.CI.equalsAny(redirectHostName, ...)) {          // line 69
+#             log.debug("OIDC redirecting to {}", redirectUrl);       // line 70
+#             response.sendRedirect(redirectUrl);                     // line 71
+#         } else {
+#             log.error("Invalid OIDC redirectURL={}." ...);          // lines 73-75
+#             response.sendError(HttpServletResponse.SC_BAD_REQUEST,  // line 76
+#                 "Invalid redirectURL! Must match server or ui hostname."); // line 77
+#         }
+#     }
+#
+# The :69 if is the only top level if-then-else of oidc() ( the :55 if has
+# no else ). ThenPart / ElsePart wrap the condition location. The sink :71
+# sits in the then part, the error response :76-77 in the else part.
+#
+# Lines starting with '#' and blank lines are ignored by the CI checker.
+
+kb_call_guarded_by_cond_in_else_part( startloc_73_13_endloc_75_33_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, else_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
+kb_call_guarded_by_cond_in_else_part( startloc_76_13_endloc_77_89_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, else_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
+kb_call_guarded_by_cond_in_then_part( startloc_70_13_endloc_70_61_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, then_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
+kb_call_guarded_by_cond_in_then_part( startloc_71_13_endloc_71_47_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, then_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).
+kb_top_level_if_then_else_gadget( startloc_52_5_endloc_80_6_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, then_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java, else_part_startloc_69_13_endloc_69_92_dspace_dash_server_dash_webapp_slash_src_slash_main_slash_java_slash_org_slash_dspace_slash_app_slash_rest_slash_OidcRestController_dot_java ).

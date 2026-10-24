@@ -1271,11 +1271,11 @@ jobs:
           fi
           rm -f dspace_oidc_kb.pl
 
-      - name: assert kb_gated_call facts on OidcRestController.java KB
+      - name: assert top level if-then-else gadget facts on OidcRestController.java KB
         run: |
-          # The open redirect at :71 and the sendError at :76-77 sit on
-          # opposite branches of the :69 host check. See
-          # tests/expected/facts/dspace/oidc_gated_calls.txt.
+          # The open redirect at :71 and the sendError at :76-77 sit in the
+          # then / else parts of the :69 host check. See
+          # tests/expected/facts/dspace/oidc_gadget_facts.txt.
           compose="docker compose \
             -f ./compose/compose.base.yaml \
             -f ./compose/compose.app.yaml \
@@ -1296,22 +1296,22 @@ jobs:
               echo "  MISS: $expected"
               missing=$((missing + 1))
             fi
-          done < tests/expected/facts/dspace/oidc_gated_calls.txt
+          done < tests/expected/facts/dspace/oidc_gadget_facts.txt
           echo "checked=$total missing=$missing"
           if [ "$missing" -gt 0 ]; then
-            echo "FAILED: $missing kb_gated_call fact(s) missing"
+            echo "FAILED: $missing gadget fact(s) missing"
             exit 1
           fi
           rm -f dspace_oidc_kb.pl
 
       - name: assert kbapi replies for the guarded OIDC open redirect
         run: |
-          # The four queries the agent walks on GET /api/authn/oidc ( #105 ) :
-          # reachable sendRedirect sink, redirectUrl user input, dataflow
-          # :54 -> :71, and the :69 equalsAny guard : redirectUrl flows into
-          # its arg 0 ( through Utils.getHostName ) and the sendError
-          # message sits on its other branch. queryengine is internal to the
-          # compose network, so the stdlib-only checker runs inside `app`.
+          # The queries the agent walks on GET /api/authn/oidc ( #105 ) :
+          # reachable sendRedirect sink, dataflow :54 -> :71, and the :69
+          # equalsAny if-then-else : redirectUrl flows into its arg 0
+          # ( through Utils.getHostName ), sendRedirect sits in its then
+          # part and sendError in its else part. queryengine is internal to
+          # the compose network, so the stdlib-only checker runs inside `app`.
           compose="docker compose \
             -f ./compose/compose.base.yaml \
             -f ./compose/compose.app.yaml \
