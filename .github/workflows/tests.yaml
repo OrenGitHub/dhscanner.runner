@@ -1321,6 +1321,68 @@ jobs:
           kb_location=$(basename "${dspace_oidc_kb_path}" .pl)
           $compose exec -T app python - "$kb_location" < tests/kbapi/oidc_guard.py
 
+      - name: scan DSpace's spring security login filters ( Oidc / Orcid / Shibboleth, --with_agent )
+        run: |
+          # Same one-file agent-mode scan as OidcRestController.java above,
+          # for the three login filters whose `redirectAfterSuccess` copies
+          # its guarded open redirect. The redirect url comes from
+          # `request.getParameter("redirectUrl")` rather than a spring
+          # `@RequestParam`.
+          sample=dspace_login_filters_sample/dspace-server-webapp/src/main/java/org/dspace/app/rest/security
+          mkdir -p "$sample"
+          for filter in OidcLoginFilter OrcidLoginFilter ShibbolethLoginFilter; do
+            cp "dspace-src/dspace-server-webapp/src/main/java/org/dspace/app/rest/security/${filter}.java" "$sample/"
+          done
+          python -m cli run --scan_dirname ./dspace_login_filters_sample --ignore_testing_code true --with_agent 2>&1 | tee dspace_login_filters_scan.log
+          kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' dspace_login_filters_scan.log | awk '{print $1}' | tail -n 1)
+          if [ -z "$kb_path" ]; then
+            echo "could not extract kb filename from scan log"
+            exit 1
+          fi
+          echo "dspace_login_filters_kb_path=$kb_path" >> "$GITHUB_ENV"
+
+      - name: assert HttpServletRequest.getParameter user inputs on the login filters KB
+        run: |
+          # queryengine's `endpoints_user_input_servlet/1` : each filter's
+          # `request.getParameter("redirectUrl")` is user input, and flows
+          # into its `sendRedirect`. See
+          # tests/expected/facts/dspace/login_filters_user_inputs.txt.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          $compose cp tests/prolog/servlet_user_input.pl queryengine:/tmp/servlet_user_input.pl
+          $compose exec -T -w /queryengine queryengine swipl /tmp/servlet_user_input.pl -- "${dspace_login_filters_kb_path}" | tee login_filters_raw.log
+          grep -E '^(USER_INPUT|OPEN_REDIRECT): ' login_filters_raw.log | sort > login_filters.actual
+          grep -Ev '^\s*(#|$)' tests/expected/facts/dspace/login_filters_user_inputs.txt | tr -d '\r' | sort > login_filters.expected
+          set +e
+          delta=$(diff login_filters.expected login_filters.actual)
+          diff_exit=$?
+          set -e
+          if [ "$diff_exit" -ne 0 ]; then
+            echo "FAIL: login filters user input snapshot drifted :"
+            echo "$delta"
+            exit 1
+          fi
+          echo "PASS: $(grep -c '^USER_INPUT' login_filters.actual) getParameter user input(s) reach sendRedirect"
+          rm -f login_filters_raw.log login_filters.actual login_filters.expected
+
+      - name: assert kbapi replies for the guarded login filter open redirects
+        run: |
+          # SelectSanitizers from each filter's getParameter to its
+          # sendRedirect : the equalsAny host check, sendRedirect in its
+          # then part, sendError in its else part.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${dspace_login_filters_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/login_filters_guard.py
+
       - name: scan full DSpace repo ( parser-coverage benchmark, --with_agent )
         run: |
           # Full-repo parser-coverage benchmark. Scans the entire DSpace
@@ -1474,4 +1536,4 @@ jobs:
           rm -f dspace_full_scan.log
 
       - name: remove DSpace tested code
-        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log dspace_oidc_sample dspace_oidc_scan.log
+        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log dspace_oidc_sample dspace_oidc_scan.log dspace_login_filters_sample dspace_login_filters_scan.log
