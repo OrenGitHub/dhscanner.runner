@@ -7,9 +7,10 @@ compose network::
     docker compose ... exec -T app python - <kb_location> < tests/kbapi/oidc_guard.py
 
 The queries walk the same path the agent takes on ``GET /api/authn/oidc``
-( runner issue #105 ): handler -> reachable open-redirect sink -> dataflow
-from the user input into the sink -> the top level if-then-else guarding
-the sink, with the error response in its else part.
+( runner issue #105 ): the seeder's handler query ( #107 ) -> reachable
+open-redirect sink -> dataflow from the user input into the sink -> the
+top level if-then-else guarding the sink, with the error response in its
+else part.
 """
 
 from __future__ import annotations
@@ -56,6 +57,35 @@ def query(kb_location: str, tag: str, contents: dict[str, typing.Any]) -> dict[s
     print(f"== {tag}")
     print(json.dumps(reply, indent=2))
     return reply["contents"]
+
+
+def check_endpoint(kb_location: str) -> list[str]:
+    # The handler declares its verb as `@RequestMapping(method =
+    # RequestMethod.GET)` ( :52 ). The url is not checked : its class level
+    # prefix concatenates `AuthnRest.CATEGORY`, a constant from another
+    # file, so it comes back as '{?}'.
+    reply = query(kb_location, "SelectHttpHandlers", {
+        "verbs": ["Get"],
+        "authentications": ["Unauthenticated", "Authenticated"],
+        "routeContainsUrlParts": None,
+        "maxNumHttpHandlers": 50,
+    })
+    user_input = {
+        "tag": "RequestParamCtor",
+        "contents": {"requestParamName": "redirectUrl", "requestParamLocation": USER_INPUT},
+    }
+    for handler in reply["matches"]:
+        if handler["httpHandlerLocation"] != HANDLER:
+            continue
+        failures = []
+        if handler["httpHandlerVerb"] != "Get":
+            failures.append("SelectHttpHandlers: oidc handler at :52 is not a GET")
+        if handler["httpHandlerDef"] != {"tag": "MethodOfClass", "contents": ["oidc", "OidcRestController"]}:
+            failures.append("SelectHttpHandlers: handler at :52 is not OidcRestController.oidc")
+        if handler["httpHandlerUserInputs"] != [user_input]:
+            failures.append("SelectHttpHandlers: user inputs of :52 are not exactly redirectUrl at :54")
+        return failures
+    return ["SelectHttpHandlers: no GET handler at :52 ( RequestMethod.GET unresolved? )"]
 
 
 def check_sink(kb_location: str) -> list[str]:
@@ -139,7 +169,8 @@ def check_no_sanitizer_without_flow(kb_location: str) -> list[str]:
 def main() -> int:
     kb_location = sys.argv[1]
     failures = (
-        check_sink(kb_location)
+        check_endpoint(kb_location)
+        + check_sink(kb_location)
         + check_dataflow(kb_location)
         + check_sanitizer(kb_location)
         + check_no_sanitizer_without_flow(kb_location)
@@ -148,7 +179,7 @@ def main() -> int:
         print(f"FAIL: {failure}")
     if failures:
         return 1
-    print("PASS: sink, dataflow and sanitizer replies all match")
+    print("PASS: endpoint, sink, dataflow and sanitizer replies all match")
     return 0
 
 
