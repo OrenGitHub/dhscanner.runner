@@ -152,7 +152,7 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "{ total, matches } unless noted. Per-tag schema:\n"
     "\n"
     "  SelectHttpHandlers:\n"
-    "    { verbs: [ \"Get\" | \"Post\" | \"Put\" | \"Delete\" | \"Patch\" ],\n"
+    "    { verbs: [ \"Get\" | \"Post\" | \"Put\" | \"Delete\" | \"Patch\" | \"Unknown\" ],\n"
     "      authentications: [ \"Unauthenticated\" | \"Authenticated\" ],\n"
     "      routeContainsUrlParts: null | [ string ],\n"
     "      maxNumHttpHandlers: int }\n"

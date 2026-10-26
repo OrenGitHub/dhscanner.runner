@@ -89,7 +89,7 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
                    help="kb filename on the queryengine (default: kb_XXXXXXXX1-2)")
     p.add_argument("--kbapi-url", default="http://localhost:3000/api",
                    help="queryengine endpoint (default: http://localhost:3000/api)")
-    p.add_argument("--method", default=None, choices=("GET", "POST", "PUT", "DELETE", "PATCH"),
+    p.add_argument("--method", default=None, choices=("GET", "POST", "PUT", "DELETE", "PATCH", "UNKNOWN"),
                    help="HTTP method of the target endpoint (default: PUT, or GET with --handler-file)")
     p.add_argument("--url-endswith", default=_DEFAULT_URL_SUFFIX,
                    help=f"keep the one endpoint whose URL ends with this (default: {_DEFAULT_URL_SUFFIX!r})")

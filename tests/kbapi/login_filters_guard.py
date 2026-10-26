@@ -1,4 +1,4 @@
-"""Assert SelectSanitizers clears the guarded open redirects of DSpace's login filters.
+"""Assert the kbapi replies the agent needs on DSpace's login filters.
 
 Runs against the agent-mode KB of ``OidcLoginFilter.java``,
 ``OrcidLoginFilter.java`` and ``ShibbolethLoginFilter.java``
@@ -12,6 +12,11 @@ Each filter's ``redirectAfterSuccess`` copies the OIDC controller's guard
 is user input ( queryengine ``endpoints_user_input_servlet/1`` ), its
 host goes through ``Utils.getHostName`` into ``Strings.CI.equalsAny``,
 ``sendRedirect`` sits in the then part and ``sendError`` in the else part.
+
+``redirectAfterSuccess`` itself is a handler with verb ``Unknown``
+( queryengine ``endpoints_http_servlet/2`` ) : it takes the
+``HttpServletRequest request``, while the filter's verb and url are
+registered elsewhere.
 """
 
 from __future__ import annotations
@@ -43,6 +48,13 @@ FILTERS = {
     "ShibbolethLoginFilter.java": (113, 130, 132),
 }
 
+# filename -> `redirectAfterSuccess( HttpServletRequest request, ... )` span
+HANDLERS = {
+    "OidcLoginFilter.java": (72, 100),
+    "OrcidLoginFilter.java": (129, 158),
+    "ShibbolethLoginFilter.java": (111, 139),
+}
+
 
 def query(kb_location: str, tag: str, contents: dict[str, typing.Any]) -> dict[str, typing.Any]:
     request = urllib.request.Request(
@@ -55,6 +67,42 @@ def query(kb_location: str, tag: str, contents: dict[str, typing.Any]) -> dict[s
     print(f"== {tag}")
     print(json.dumps(reply, indent=2))
     return reply["contents"]
+
+
+def check_handlers(kb_location: str) -> list[str]:
+    # A method taking `HttpServletRequest request` is a handler with verb
+    # `Unknown` and url '{?}' : the filters' verb and url are registered
+    # in another file ( WebSecurityConfiguration.java ). Its user inputs
+    # are the request's getParameter calls.
+    reply = query(kb_location, "SelectHttpHandlers", {
+        "verbs": ["Unknown"],
+        "authentications": ["Unauthenticated", "Authenticated"],
+        "routeContainsUrlParts": None,
+        "maxNumHttpHandlers": 100,
+    })
+    failures = []
+    for filename, (line_start, line_end) in HANDLERS.items():
+        handler = location(filename, line_start, 5, line_end, 6)
+        user_input = {
+            "tag": "RequestParamCtor",
+            "contents": {
+                "requestParamName": "redirectUrl",
+                "requestParamLocation": location(filename, FILTERS[filename][0], 30, FILTERS[filename][0], 65),
+            },
+        }
+        matches = [m for m in reply["matches"] if m["httpHandlerLocation"] == handler]
+        if len(matches) != 1:
+            failures.append(f"SelectHttpHandlers: no single Unknown handler at {filename}:{line_start}")
+            continue
+        match = matches[0]
+        class_name = filename.removesuffix(".java")
+        if match["httpHandlerDef"] != {"tag": "MethodOfClass", "contents": ["redirectAfterSuccess", class_name]}:
+            failures.append(f"SelectHttpHandlers: {filename}:{line_start} is not {class_name}.redirectAfterSuccess")
+        if match["httpHandlerVerb"] != "Unknown" or match["httpHandlerUrl"] != "{?}":
+            failures.append(f"SelectHttpHandlers: {filename}:{line_start} is not Unknown '{{?}}'")
+        if match["httpHandlerUserInputs"] != [user_input]:
+            failures.append(f"SelectHttpHandlers: user inputs of {filename}:{line_start} are not exactly redirectUrl")
+    return failures
 
 
 def check_filter(kb_location: str, filename: str, lines: tuple[int, int, int]) -> list[str]:
@@ -95,14 +143,14 @@ def check_filter(kb_location: str, filename: str, lines: tuple[int, int, int]) -
 
 def main() -> int:
     kb_location = sys.argv[1]
-    failures = []
+    failures = check_handlers(kb_location)
     for filename, lines in FILTERS.items():
         failures += check_filter(kb_location, filename, lines)
     for failure in failures:
         print(f"FAIL: {failure}")
     if failures:
         return 1
-    print(f"PASS: SelectSanitizers reports the equalsAny guard on all {len(FILTERS)} login filters")
+    print(f"PASS: SelectHttpHandlers + SelectSanitizers on all {len(FILTERS)} login filters")
     return 0
 
 

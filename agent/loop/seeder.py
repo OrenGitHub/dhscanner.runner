@@ -25,16 +25,19 @@ _log = logging.getLogger(__name__)
 # bucket-B endpoint\" so pagination is explicitly rejected.
 _SEED_LIMIT: typing.Final[int] = 10_000
 
-_METHODS: typing.Final[dict[str, typing.Literal["GET", "POST", "PUT", "DELETE", "PATCH"]]] = {
+_METHODS: typing.Final[dict[str, typing.Literal["GET", "POST", "PUT", "DELETE", "PATCH", "UNKNOWN"]]] = {
     "Get": "GET",
     "Post": "POST",
     "Put": "PUT",
     "Delete": "DELETE",
     "Patch": "PATCH",
+    # reached by a request, verb registered elsewhere ( eg a servlet
+    # method taking `HttpServletRequest request` ), url '{?}'
+    "Unknown": "UNKNOWN",
 }
 
 _SEED_QUERY: typing.Final[dict[str, typing.Any]] = {
-    "verbs": ["Get", "Post", "Put", "Delete", "Patch"],
+    "verbs": ["Get", "Post", "Put", "Delete", "Patch", "Unknown"],
     "authentications": ["Unauthenticated", "Authenticated"],
     "routeContainsUrlParts": None,
     "maxNumHttpHandlers": _SEED_LIMIT,

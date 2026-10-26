@@ -65,7 +65,7 @@ class EndpointRef(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra="ignore")
 
-    method: typing.Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
+    method: typing.Literal["GET", "POST", "PUT", "DELETE", "PATCH", "UNKNOWN"]
     url: str
     handler_location: Location
     bucket: EndpointBucket
