@@ -1,0 +1,24 @@
+# Expected `tests/prolog/servlet_user_input.pl` output on the one-file
+# agent-mode KB of DSpace dspace-10.1's spring security login filters :
+#
+#     dspace-server-webapp/src/main/java/org/dspace/app/rest/security/
+#         OidcLoginFilter.java, OrcidLoginFilter.java, ShibbolethLoginFilter.java
+#
+# Each `redirectAfterSuccess(HttpServletRequest request, ...)` reads
+#
+#     String redirectUrl = request.getParameter("redirectUrl");
+#
+# which queryengine's `endpoints_user_input_servlet/1` treats as user input
+# ( `request` is a param typed jakarta.servlet.http.HttpServletRequest ),
+# and `response.sendRedirect(redirectUrl)` is reachable from it. The
+# redirect is guarded ( tests/kbapi/login_filters_guard.py ), but the
+# intra procedural flow itself is there.
+#
+# Lines starting with '#' and blank lines are ignored by the CI checker.
+
+USER_INPUT: OidcLoginFilter.java:74
+USER_INPUT: OrcidLoginFilter.java:131
+USER_INPUT: ShibbolethLoginFilter.java:113
+OPEN_REDIRECT: OidcLoginFilter.java:74 -> 94
+OPEN_REDIRECT: OrcidLoginFilter.java:131 -> 151
+OPEN_REDIRECT: ShibbolethLoginFilter.java:113 -> 132
