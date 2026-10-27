@@ -17,19 +17,30 @@ The `.env` at the repo root is the only source of config.
 
 ## a testing effort
 
-One testing effort = one sample of the agent's judgment, read by a human:
+One testing effort = 5 random endpoints, reviewed by a teacher ( a human or an external LLM ).
+
+**No real vuln is needed to improve.** The unit of improvement is a kb fact: a sink ( even a safe one ), a sanitizer, an auth check, a call edge.
+Those are everywhere, so every random endpoint tests the whole pipeline ( parsers -> kb -> kbapi -> agent ).
+
+**Small on purpose.** 5 endpoints can be reviewed for real; following every path in a large codebase can't.
+Progress comes from doing "fives" across many repos ( other languages, frameworks, sink idioms ), not from going exhaustive on one.
 
 1. **Fresh kb, plain user flow** ( above ). Run the loop from PowerShell : Git Bash rewrites `/tmp/kb_...` into a Windows path, and a missing kb answers 0 matches silently.
 2. **Randomize 5 endpoints:**
    ```powershell
    python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 --use-random-endpoints-order
    ```
-   Each run picks 5 new endpoints. Run it twice ( 10 endpoints ), plus once without the flag as the lexicographic baseline.
-3. **Inspect the reasoning** in `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl`, per endpoint:
+   Each run picks 5 new endpoints.
+3. **Source first.** For each endpoint, read the source *before* the trace, and list what is reachable: sinks ( even safe ones ), the checks in front of them, and the auth.
+   The trace can't show a sink the kb missed, so this step is the only way to catch one.
+4. **Then diff against the trace** ( `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl` ):
    - `item_popped` : what is on the desk ( verb, url, bucket, auth evidence, user inputs ).
-   - `kbapi_call` / `kbapi_reply` : which queries, and what came back.
-   - `llm_verdict` : is every claim in `reason_for_verdict` backed by a reply? Check the doubtful ones against the source.
-4. **Write down the ONE most important thing to improve**, with the endpoint and the source lines that show it.
+   - `kbapi_call` / `kbapi_reply` : what the kb returned, vs the source list.
+   - `llm_verdict` : is every claim backed by a reply, and is the verdict right *given the kb*?
+5. **Blame the right layer.** The agent works on top of the kb, not the source:
+   - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
+   - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
+6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
 
 ## DSpace: random 5 + 5 + lexicographic 5 ( 2026-10-27 )
 
