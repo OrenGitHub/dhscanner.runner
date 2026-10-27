@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.41, codegen 1.0.40, kbgen 1.0.47 and queryengine 1.0.73.
+The images are parsers 1.1.42, codegen 1.0.40, kbgen 1.0.47 and queryengine 1.0.74.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
