@@ -17,19 +17,70 @@ The `.env` at the repo root is the only source of config.
 
 ## a testing effort
 
-One testing effort = one sample of the agent's judgment, read by a human:
+One testing effort = 5 random endpoints, reviewed by a teacher ( a human or an external LLM ).
+
+**No real vuln is needed to improve.** The unit of improvement is a kb fact: a sink ( even a safe one ), a sanitizer, an auth check, a call edge.
+Those are everywhere, so every random endpoint tests the whole pipeline ( parsers -> kb -> kbapi -> agent ).
+
+**Small on purpose.** 5 endpoints can be reviewed for real; following every path in a large codebase can't.
+Progress comes from doing "fives" across many repos ( other languages, frameworks, sink idioms ), not from going exhaustive on one.
 
 1. **Fresh kb, plain user flow** ( above ). Run the loop from PowerShell : Git Bash rewrites `/tmp/kb_...` into a Windows path, and a missing kb answers 0 matches silently.
 2. **Randomize 5 endpoints:**
    ```powershell
    python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 --use-random-endpoints-order
    ```
-   Each run picks 5 new endpoints. Run it twice ( 10 endpoints ), plus once without the flag as the lexicographic baseline.
-3. **Inspect the reasoning** in `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl`, per endpoint:
+   Each run picks 5 new endpoints.
+3. **Source first.** For each endpoint, read the source *before* the trace, and list what is reachable: sinks ( even safe ones ), the checks in front of them, and the auth.
+   The trace can't show a sink the kb missed, so this step is the only way to catch one.
+4. **Then diff against the trace** ( `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl` ):
    - `item_popped` : what is on the desk ( verb, url, bucket, auth evidence, user inputs ).
-   - `kbapi_call` / `kbapi_reply` : which queries, and what came back.
-   - `llm_verdict` : is every claim in `reason_for_verdict` backed by a reply? Check the doubtful ones against the source.
-4. **Write down the ONE most important thing to improve**, with the endpoint and the source lines that show it.
+   - `kbapi_call` / `kbapi_reply` : what the kb returned, vs the source list.
+   - `llm_verdict` : is every claim backed by a reply, and is the verdict right *given the kb*?
+5. **Blame the right layer.** The agent works on top of the kb, not the source:
+   - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
+   - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
+6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## DSpace: random 5, source first ( 2026-10-27 )
+
+Same kb as below ( `/tmp/kb_XXXXXXXX1-0.pl`, same images, same DSpace commit ). 5 sessions, 5 kbapi calls, 31-44 s each.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261027T125230Z-35812`.
+
+| endpoint | the source | kb | verdict |
+|---|---|---|---|
+| `OidcAuthentication.isUsed` ( `:79` ) | 2 null checks, no sink | 0 sinks | safe ✔ |
+| GET `/viewevents/{uuid}` ( `StatisticsRestController.java:69` ) | only throws | 0 sinks | safe ✔ |
+| `ExportEventProcessor` ctor ( `:70` ) | 2 field assignments | 0 sinks | safe ✔ |
+| DELETE `/itemReadGroup` ( `CollectionGroupRestController.java:260` ) | DB read / delete / insert through Hibernate, all keyed by a typed `UUID`; `@PreAuthorize` WRITE, plus an in-body ADMIN check ( `AuthorizeUtil.java:553` ) | 0 sinks, `@PreAuthorize` only | safe ✔ |
+| `RootRestRepository.getRoot` ( `:25` ) | one converter call, no sink | 0 sinks | safe ✔ |
+
+All 5 verdicts are right, given the kb and given the source. 3 of 5 are again `UNKNOWN {?}` helpers, not routes.
+The agent still cites base rates ( "unauth 424 vs PreAuthorize 143", "prior verdicts were safe" ) as context.
+
+### the most important thing to improve
+
+**The kb has no Java sinks except `sendRedirect`.** `predicates/sinks/` has Java only under `open_redirects/java/servlet.pl`.
+There is no Java SQL, file or SSRF predicate, so on a Java repo `SelectControlFlowReachableSinks` can only ever return an open redirect.
+"0 sinks" on DSpace says more about the catalog than about the endpoint.
+
+The calls are already in the kb, resolved, and nothing classifies them:
+
+| family | resolved call sites in the DSpace kb ( examples ) |
+|---|---|
+| file | `java.io.File` 198, `FileInputStream` 41, `FileOutputStream` 28, `FileReader` 21, `FileWriter` 19, `File.delete` 13 |
+| SSRF | `HttpGet` 18, `CloseableHttpClient.execute` 11, `java.net.URL` 17, `java.net.http.HttpClient.send` 6 |
+| SQL | `Unknown.createQuery` 27, `Unknown.getHibernateSession.createQuery` 8, `*.executeUpdate` 22, `*.createNativeQuery` 12 ( receivers often `Unknown.`, so match on the method suffix ) |
+
+The endpoint that shows it is not in this sample, but sits one private call from a route:
+unauth GET `/sitemaps/{name}` ( `SitemapRestController.java:70` ) opens `new FileInputStream(foundSitemapFile)` ( `:119` ).
+It is safe: `name` only picks a file by `equalsIgnoreCase` against `sitemapOutputDir.listFiles()` ( `:80` ), an allow-list.
+That is exactly the kb fact we want: a file read sink, plus the check in front of it. Today the kb sees neither.
+
+**Quick win:** yes. Add `files/java`, `ssrf/java`, `db/java` next to `open_redirects/java/servlet.pl`, one fqn list each.
+It needs no call-graph work: the sitemap read is a direct private call.
+It comes before the base class -> subclass dispatch fix below: dispatch only pays off once there are Java sinks to reach.
+( Related: the DSpace kb has 0 `kb_class_has_1st_party_super` facts, which that fix will need. )
 
 ## DSpace: random 5 + 5 + lexicographic 5 ( 2026-10-27 )
 
