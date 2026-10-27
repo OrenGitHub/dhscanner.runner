@@ -129,6 +129,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="hard cap on items processed (default: run until queue drains)",
     )
     parser.add_argument(
+        "--use-random-endpoints-order",
+        action="store_true",
+        help=(
+            "seed the queue in random order, so every --max-items N run "
+            "faces N different endpoints (default: lexicographic order)"
+        ),
+    )
+    parser.add_argument(
         "--max-wall-clock-s",
         type=_positive_float,
         default=None,
@@ -206,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         openai_timeout_s=args.openai_timeout_s,
         max_items=args.max_items,
         max_wall_clock_s=args.max_wall_clock_s,
+        random_order=args.use_random_endpoints_order,
         trace_root=args.trace_root,
     )
 

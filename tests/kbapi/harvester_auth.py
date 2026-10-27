@@ -55,6 +55,7 @@ def handlers(kb_location: str, authentication: str) -> list[dict[str, typing.Any
             "authentications": [authentication],
             "routeContainsUrlParts": None,
             "maxNumHttpHandlers": 50,
+            "orderEndpointsLexicographically": True,
         }}).encode(),
         headers={"Content-Type": "application/json"},
     )

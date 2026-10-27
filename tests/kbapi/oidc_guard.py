@@ -69,6 +69,7 @@ def check_endpoint(kb_location: str) -> list[str]:
         "authentications": ["Unauthenticated", "Authenticated"],
         "routeContainsUrlParts": None,
         "maxNumHttpHandlers": 50,
+        "orderEndpointsLexicographically": True,
     })
     user_input = {
         "tag": "RequestParamCtor",

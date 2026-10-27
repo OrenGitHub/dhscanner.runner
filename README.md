@@ -41,6 +41,11 @@ the kb and returning a verdict ( `safe` / `suspicious` / `defer` /
 `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl`. See
 `python -m agent.loop --help` for the budgets.
 
+Endpoints are seeded in lexicographic order, so runs are comparable. Add
+`--use-random-endpoints-order` to seed them in random order instead, so
+each `--max-items 5` run faces 5 new endpoints ( the order is in the
+trace's `queue_seeded` event ).
+
 ## scan with the built-in queries ( soon deprecated )
 
 ```bash
