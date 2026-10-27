@@ -42,6 +42,46 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
 
+## DSpace: random 5, source first ( 2026-10-27 )
+
+Same kb as below ( `/tmp/kb_XXXXXXXX1-0.pl`, same images, same DSpace commit ). 5 sessions, 5 kbapi calls, 31-44 s each.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261027T125230Z-35812`.
+
+| endpoint | the source | kb | verdict |
+|---|---|---|---|
+| `OidcAuthentication.isUsed` ( `:79` ) | 2 null checks, no sink | 0 sinks | safe ✔ |
+| GET `/viewevents/{uuid}` ( `StatisticsRestController.java:69` ) | only throws | 0 sinks | safe ✔ |
+| `ExportEventProcessor` ctor ( `:70` ) | 2 field assignments | 0 sinks | safe ✔ |
+| DELETE `/itemReadGroup` ( `CollectionGroupRestController.java:260` ) | DB read / delete / insert through Hibernate, all keyed by a typed `UUID`; `@PreAuthorize` WRITE, plus an in-body ADMIN check ( `AuthorizeUtil.java:553` ) | 0 sinks, `@PreAuthorize` only | safe ✔ |
+| `RootRestRepository.getRoot` ( `:25` ) | one converter call, no sink | 0 sinks | safe ✔ |
+
+All 5 verdicts are right, given the kb and given the source. 3 of 5 are again `UNKNOWN {?}` helpers, not routes.
+The agent still cites base rates ( "unauth 424 vs PreAuthorize 143", "prior verdicts were safe" ) as context.
+
+### the most important thing to improve
+
+**The kb has no Java sinks except `sendRedirect`.** `predicates/sinks/` has Java only under `open_redirects/java/servlet.pl`.
+There is no Java SQL, file or SSRF predicate, so on a Java repo `SelectControlFlowReachableSinks` can only ever return an open redirect.
+"0 sinks" on DSpace says more about the catalog than about the endpoint.
+
+The calls are already in the kb, resolved, and nothing classifies them:
+
+| family | resolved call sites in the DSpace kb ( examples ) |
+|---|---|
+| file | `java.io.File` 198, `FileInputStream` 41, `FileOutputStream` 28, `FileReader` 21, `FileWriter` 19, `File.delete` 13 |
+| SSRF | `HttpGet` 18, `CloseableHttpClient.execute` 11, `java.net.URL` 17, `java.net.http.HttpClient.send` 6 |
+| SQL | `Unknown.createQuery` 27, `Unknown.getHibernateSession.createQuery` 8, `*.executeUpdate` 22, `*.createNativeQuery` 12 ( receivers often `Unknown.`, so match on the method suffix ) |
+
+The endpoint that shows it is not in this sample, but sits one private call from a route:
+unauth GET `/sitemaps/{name}` ( `SitemapRestController.java:70` ) opens `new FileInputStream(foundSitemapFile)` ( `:119` ).
+It is safe: `name` only picks a file by `equalsIgnoreCase` against `sitemapOutputDir.listFiles()` ( `:80` ), an allow-list.
+That is exactly the kb fact we want: a file read sink, plus the check in front of it. Today the kb sees neither.
+
+**Quick win:** yes. Add `files/java`, `ssrf/java`, `db/java` next to `open_redirects/java/servlet.pl`, one fqn list each.
+It needs no call-graph work: the sitemap read is a direct private call.
+It comes before the base class -> subclass dispatch fix below: dispatch only pays off once there are Java sinks to reach.
+( Related: the DSpace kb has 0 `kb_class_has_1st_party_super` facts, which that fix will need. )
+
 ## DSpace: random 5 + 5 + lexicographic 5 ( 2026-10-27 )
 
 queryengine 1.0.73, 567 seeded handlers, 15 sessions, 22 kbapi calls.
