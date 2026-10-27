@@ -45,18 +45,19 @@ Every verdict rests on one fact: `SelectControlFlowReachableSinks` from the hand
 
 ### the most important thing to improve
 
-**"The kb sees nothing" becomes "safe".** The agent can't tell *no sink* from *the kb's call graph stops here*.
+**Nothing in the agent: it reasons correctly on top of the kb.** The agent works on the kb, not on the source, so 0 sinks in the kb rightly means `safe`.
 
+The one thing worth fixing is in the kb: virtual dispatch through the generic REST controller.
 `DELETE /api/{apiCategory}/{model}/{uuid}` ( `RestResourceController.java:1120` ) shows it:
 
-- the handler calls `deleteInternal`, which picks the repository by name at runtime : `utils.getResourceRepository(apiCategory, model).deleteById(id)`.
-- the real work, and the real auth ( eg `@PreAuthorize("hasPermission(#id, 'ITEM', 'DELETE')")` in `ItemRestRepository.java:151` ), sit behind that call.
-- the kb sees neither, so the handler is `pre_auth` with 0 sinks, and the agent wrote "pre_auth alone is not anomalous ... safe" three times.
+1. `deleteInternal` picks the repository by name at runtime : `utils.getResourceRepository(apiCategory, model)`, ie `getBean(apiCategory + "." + modelPlural)` ( `Utils.java:283` ).
+2. `DSpaceRestRepository.deleteById` ( line 194 ) calls `getThisRepository().delete(context, id)`, effectively `this.delete` through the spring proxy. The static target is the base `delete` ( line 217 ), which only throws.
+3. The real work and the real auth are in the overrides, eg `@PreAuthorize("hasPermission(#id, 'ITEM', 'DELETE')")` in `ItemRestRepository.java:151`.
 
-What to do: `safe` needs evidence that the call graph from the handler is *closed*.
-Give the agent a kbapi query for the unresolved calls reachable from a handler ( call sites with no `kb_call_resolved` target ), and make "0 sinks + unresolved calls" an `inconclusive` that names the call site, not a `safe`.
+The kb stops at step 2, so these handlers look `pre_auth` with 0 sinks.
+Expanding step 2 to every override ( base class -> subclass, the sibling of G3 in `docs/DSpace.md` ) is the fix. It is not a quick win.
 
-Smaller, and already listed below : the prompt still cites earlier verdicts and base rates as evidence, and 7 of the 10 random picks are `UNKNOWN {?}` helper methods, not routes.
+Smaller, already listed below: the prompt still cites earlier verdicts and base rates as evidence, and 7 of the 10 random picks are `UNKNOWN {?}` helper methods, not routes.
 
 ## DSpace: first 5 agent loop iterations ( 2026-10-26 )
 
