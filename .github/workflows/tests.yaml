@@ -1383,6 +1383,34 @@ jobs:
           kb_location=$(basename "${dspace_login_filters_kb_path}" .pl)
           $compose exec -T app python - "$kb_location" < tests/kbapi/login_filters_guard.py
 
+      - name: scan DSpace's CollectionHarvestSettingsController.java
+        run: |
+          # Same one-file agent-mode scan as OidcRestController.java above.
+          # Both harvester handlers carry @PreAuthorize ( #113 ).
+          sample=dspace_harvester_sample/dspace-server-webapp/src/main/java/org/dspace/app/rest
+          mkdir -p "$sample"
+          cp dspace-src/dspace-server-webapp/src/main/java/org/dspace/app/rest/CollectionHarvestSettingsController.java "$sample/"
+          python -m cli run --create_knowledge_base_from ./dspace_harvester_sample --ignore_testing_code true 2>&1 | tee dspace_harvester_scan.log
+          kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' dspace_harvester_scan.log | awk '{print $1}' | tail -n 1)
+          if [ -z "$kb_path" ]; then
+            echo "could not extract kb filename from scan log"
+            exit 1
+          fi
+          echo "dspace_harvester_kb_path=$kb_path" >> "$GITHUB_ENV"
+
+      - name: assert kbapi replies for the @PreAuthorize harvester handlers
+        run: |
+          # SelectHttpHandlers returns both handlers as Authenticated, with
+          # their @PreAuthorize annotation and expression as evidence.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${dspace_harvester_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/harvester_auth.py
+
       - name: scan full DSpace repo ( parser-coverage benchmark )
         run: |
           # Full-repo parser-coverage benchmark. Scans the entire DSpace
@@ -1536,4 +1564,4 @@ jobs:
           rm -f dspace_full_scan.log
 
       - name: remove DSpace tested code
-        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log dspace_oidc_sample dspace_oidc_scan.log dspace_login_filters_sample dspace_login_filters_scan.log
+        run: rm -rf dspace-src dspace_java_sample dspace.sarif.json dspace_full_scan.log dspace_oidc_sample dspace_oidc_scan.log dspace_login_filters_sample dspace_login_filters_scan.log dspace_harvester_sample dspace_harvester_scan.log
