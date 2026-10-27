@@ -110,7 +110,7 @@ jobs:
           # the KB; no SARIF is produced. The CLI logs the KB path as
           # "[ step 6 ] kb filename: /tmp/kb_XXX.pl", which the next step
           # feeds straight into `docker compose cp` to grep the facts.
-          python -m cli run --scan_dirname ./formbricks --ignore_testing_code true --with_agent 2>&1 | tee formbricks_scan.log
+          python -m cli run --create_knowledge_base_from ./formbricks --ignore_testing_code true 2>&1 | tee formbricks_scan.log
           kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' formbricks_scan.log | awk '{print $1}' | tail -n 1)
           if [ -z "$kb_path" ]; then
             echo "could not extract kb filename from scan log"
@@ -1212,7 +1212,7 @@ jobs:
           echo "PASS: MetadataValue.java reached both NATIVE and DHSCANNER parsing successfully"
           rm -f dspace_java_rows.log
 
-      - name: scan a single DSpace Java file ( OidcRestController.java, --with_agent )
+      - name: scan a single DSpace Java file ( OidcRestController.java )
         run: |
           # One-file agent-mode scan of OidcRestController.java out of the
           # `dspace-src` clone above. The sample dir keeps the file's
@@ -1222,7 +1222,7 @@ jobs:
           sample=dspace_oidc_sample/dspace-server-webapp/src/main/java/org/dspace/app/rest
           mkdir -p "$sample"
           cp dspace-src/dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java "$sample/"
-          python -m cli run --scan_dirname ./dspace_oidc_sample --ignore_testing_code true --with_agent 2>&1 | tee dspace_oidc_scan.log
+          python -m cli run --create_knowledge_base_from ./dspace_oidc_sample --ignore_testing_code true 2>&1 | tee dspace_oidc_scan.log
           kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' dspace_oidc_scan.log | awk '{print $1}' | tail -n 1)
           if [ -z "$kb_path" ]; then
             echo "could not extract kb filename from scan log"
@@ -1321,7 +1321,7 @@ jobs:
           kb_location=$(basename "${dspace_oidc_kb_path}" .pl)
           $compose exec -T app python - "$kb_location" < tests/kbapi/oidc_guard.py
 
-      - name: scan DSpace's spring security login filters ( Oidc / Orcid / Shibboleth, --with_agent )
+      - name: scan DSpace's spring security login filters ( Oidc / Orcid / Shibboleth )
         run: |
           # Same one-file agent-mode scan as OidcRestController.java above,
           # for the three login filters whose `redirectAfterSuccess` copies
@@ -1333,7 +1333,7 @@ jobs:
           for filter in OidcLoginFilter OrcidLoginFilter ShibbolethLoginFilter; do
             cp "dspace-src/dspace-server-webapp/src/main/java/org/dspace/app/rest/security/${filter}.java" "$sample/"
           done
-          python -m cli run --scan_dirname ./dspace_login_filters_sample --ignore_testing_code true --with_agent 2>&1 | tee dspace_login_filters_scan.log
+          python -m cli run --create_knowledge_base_from ./dspace_login_filters_sample --ignore_testing_code true 2>&1 | tee dspace_login_filters_scan.log
           kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' dspace_login_filters_scan.log | awk '{print $1}' | tail -n 1)
           if [ -z "$kb_path" ]; then
             echo "could not extract kb filename from scan log"
@@ -1383,7 +1383,7 @@ jobs:
           kb_location=$(basename "${dspace_login_filters_kb_path}" .pl)
           $compose exec -T app python - "$kb_location" < tests/kbapi/login_filters_guard.py
 
-      - name: scan full DSpace repo ( parser-coverage benchmark, --with_agent )
+      - name: scan full DSpace repo ( parser-coverage benchmark )
         run: |
           # Full-repo parser-coverage benchmark. Scans the entire DSpace
           # tree ( ~3148 .java files at tag dspace-10.1 after
@@ -1400,7 +1400,7 @@ jobs:
           # the logger DB and asserts the count is at or above the
           # last-recorded baseline. See its header comment for the
           # exact baseline + regression-detection rationale.
-          python -m cli run --scan_dirname ./dspace-src --ignore_testing_code true --with_agent 2>&1 | tee dspace_full_scan.log
+          python -m cli run --create_knowledge_base_from ./dspace-src --ignore_testing_code true 2>&1 | tee dspace_full_scan.log
           echo "--- last 20 lines of scan log ---"
           tail -n 20 dspace_full_scan.log
 

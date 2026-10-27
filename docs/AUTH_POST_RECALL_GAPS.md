@@ -130,7 +130,7 @@ submodule edits (`docker compose ... build queryengine`).
 ```powershell
 # 1. Fresh KB from a formbricks checkout under ./formbricks/
 $env:PYTHONIOENCODING = 'utf-8'
-python -m cli run --scan_dirname formbricks --ignore_testing_code true --with_agent
+python -m cli run --create_knowledge_base_from formbricks --ignore_testing_code true
 # → note the kb_location printed in the final line (e.g. /tmp/kb_XXXXXXXX11-0.pl)
 
 # 2. Fire the 2×2 grid (edit KB_LOCATION at the top of query_grid.py if it changed)

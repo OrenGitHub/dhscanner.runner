@@ -46,10 +46,8 @@ sys.path.insert(0, str(_REPO_ROOT))
 # reads os.environ in run_item_session.
 try:
     from dotenv import load_dotenv  # type: ignore
-    # override=True: the repo .env is the canonical key source during
-    # dev; a stale shell export must NOT win. The real CLI
-    # (`python -m agent.loop`) keeps the production default
-    # (override=False) so prod exports still win there.
+    # override=True: the repo .env is the canonical key source; a
+    # stale shell export must NOT win ( same as `python -m agent.loop` ).
     load_dotenv(dotenv_path=_REPO_ROOT / ".env", override=True)
 except ImportError:
     pass

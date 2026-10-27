@@ -31,10 +31,10 @@ _DEFAULT_MODEL_FALLBACK = "gpt-5"
 def _load_dotenv_if_available() -> None:
     """Best-effort: load the repo-root ``.env`` into ``os.environ``.
 
-    ``python-dotenv`` is already in ``requirements.txt`` (the CLI
-    sibling `launcher.py` just doesn't currently use it); importing
-    is wrapped so a missing extra never breaks a run that has the
-    key already exported.
+    ``override=True``: the ``.env`` is the single source of config
+    (same as ``python -m cli``), so a stale shell export of
+    ``OPENAI_API_KEY`` must NOT win over it. Importing is wrapped so
+    a missing extra never breaks a run that has the key exported.
     """
     try:
         from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
@@ -46,7 +46,7 @@ def _load_dotenv_if_available() -> None:
     for ancestor in [here, *here.parents]:
         candidate = ancestor.parent / ".env" if ancestor.is_file() else ancestor / ".env"
         if candidate.is_file():
-            load_dotenv(dotenv_path=candidate, override=False)
+            load_dotenv(dotenv_path=candidate, override=True)
             return
 
 
@@ -65,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="kb_filename",
         help=(
-            "kb filename as returned by `python -m cli run --with_agent` "
+            "kb filename as returned by `python -m cli run --create_knowledge_base_from` "
             "(forwarded verbatim to the queryengine as ?kb_location=...)"
         ),
     )
