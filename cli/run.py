@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import http
 import math
 import json
@@ -255,6 +256,48 @@ def resolve_file_mappings(
 
     return result
 
+JAVA_PACKAGE: typing.Final[re.Pattern[str]] = re.compile(r'^\s*package\s+([\w.]+)\s*;', re.MULTILINE)
+JAVA_IMPORT: typing.Final[re.Pattern[str]] = re.compile(r'^\s*import\s+([\w.]+)\s*;', re.MULTILINE)
+
+def resolve_java_package_mappings(
+    scan_dirname: pathlib.Path,
+    files: list[pathlib.Path]
+) -> dict[str, list[dict[str, str]]]:
+    """
+    Resolve 1st party java imports via the package declarations.
+    Returns a dict mapping each java file to its imports that are declared in the repo.
+    E.g. {"dspace-server-webapp/.../CollectionRestRepository.java": [{
+        "from": "org.dspace.eperson.service.GroupService",
+        "to": "dspace-api/src/main/java/org/dspace/eperson/service/GroupService.java"
+    }]}
+    """
+    java_files = [f for f in files if f.suffix == '.java']
+    contents: dict[pathlib.Path, str] = {}
+    for f in java_files:
+        try:
+            contents[f] = (scan_dirname / f).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+
+    # package.Class -> file, main sources win over test sources
+    declared: dict[str, str] = {}
+    for f in sorted(contents, key=lambda f: '/src/test/' in f.as_posix()):
+        package = JAVA_PACKAGE.search(contents[f])
+        if package is not None:
+            declared.setdefault(f'{package.group(1)}.{f.stem}', f.as_posix())
+
+    result: dict[str, list[dict[str, str]]] = {}
+    for f, content in contents.items():
+        mappings = [
+            {'from': imported, 'to': declared[imported]}
+            for imported in JAVA_IMPORT.findall(content)
+            if imported in declared
+        ]
+        if mappings:
+            result[f.as_posix()] = mappings
+
+    return result
+
 def create_job_id(APPROVED_URL: str, BEARER_TOKEN: str, parsed_args: CliArgparse) -> typing.Optional[str]:
     headers = {'Authorization': f'Bearer {BEARER_TOKEN}'}
     host = parsed_args.use_external_vps if parsed_args.use_external_vps is not None else LOCALHOST
@@ -414,6 +457,7 @@ def create_upload_tasks(
     job_id: str,
     scan_dirname: pathlib.Path,
     files: list[pathlib.Path],
+    file_mappings: dict[str, list[dict[str, str]]],
     APPROVED_URL: str,
     BEARER_TOKEN: str,
     parsed_args: CliArgparse
@@ -425,8 +469,6 @@ def create_upload_tasks(
         if f.name == 'go.mod':
             module_name = extract_module_name_from(scan_dirname / f)
             break
-
-    file_mappings = resolve_file_mappings(scan_dirname, files)
 
     return [
         upload_single_file(
@@ -456,6 +498,8 @@ async def upload(
 
     n = len(files)
     percent = '%'
+    # over all files, not per batch : a java import resolves to any file in the repo
+    file_mappings = resolve_file_mappings(scan_dirname, files) | resolve_java_package_mappings(scan_dirname, files)
     batches = math.ceil(n / UPLOAD_BATCH_SIZE)
     for i in range(batches):
         start = i * UPLOAD_BATCH_SIZE
@@ -467,6 +511,7 @@ async def upload(
                     job_id,
                     scan_dirname,
                     files[start:end],
+                    file_mappings,
                     APPROVED_URL,
                     BEARER_TOKEN,
                     parsed_args
