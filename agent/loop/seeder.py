@@ -6,6 +6,10 @@ authenticated or not \u2014 and materialize every match as an
 they enter later via pair-edge discoveries from in-flight sessions (\u00a74.7).
 
 Verbal one-liner from \u00a72.2: *"we don't paginate. We enqueue."*
+
+Order ( runner #112 ): lexicographic ( verb, url, location ) by default,
+so runs are comparable; random on request, so that a ``--max-items 5``
+run faces 5 new endpoints. The queryengine orders before it caps.
 """
 
 from __future__ import annotations
@@ -41,18 +45,20 @@ _SEED_QUERY: typing.Final[dict[str, typing.Any]] = {
     "authentications": ["Unauthenticated", "Authenticated"],
     "routeContainsUrlParts": None,
     "maxNumHttpHandlers": _SEED_LIMIT,
+    "orderEndpointsLexicographically": True,
 }
 
 
-def seed_initial_queue(client: KbapiClient) -> list[EndpointRef]:
-    """Fire the seed query. Return the endpoint set.
+def seed_initial_queue(client: KbapiClient, *, random_order: bool = False) -> list[EndpointRef]:
+    """Fire the seed query. Return the endpoint set, in reply order.
 
     Deduplicated on :pyattr:`EndpointRef.endpoint_id` so that a handler
     reported twice ( eg two mappings with the same url ) lands on the
     queue exactly once.
     """
+    query = {**_SEED_QUERY, "orderEndpointsLexicographically": not random_order}
     try:
-        reply = client.query("SelectHttpHandlers", _SEED_QUERY)
+        reply = client.query("SelectHttpHandlers", query)
     except KbapiError as exc:
         _log.warning("seed query SelectHttpHandlers failed: %s", exc)
         return []

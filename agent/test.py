@@ -35,6 +35,7 @@ HTTP_HANDLERS_QUERY: typing.Final[dict[str, typing.Any]] = {
         'authentications': ['Unauthenticated', 'Authenticated'],
         'routeContainsUrlParts': None,
         'maxNumHttpHandlers': 5,
+        'orderEndpointsLexicographically': True,
     },
 }
 

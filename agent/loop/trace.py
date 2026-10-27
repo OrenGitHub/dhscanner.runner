@@ -98,8 +98,13 @@ class ScanTrace:
             kb_pointer=self.kb_pointer,
         )
 
-    def queue_seeded(self, initial_ids: list[str]) -> None:
-        self._emit(Event.QUEUE_SEEDED, initial_size=len(initial_ids), items=initial_ids)
+    def queue_seeded(self, initial_ids: list[str], *, random_order: bool = False) -> None:
+        self._emit(
+            Event.QUEUE_SEEDED,
+            initial_size=len(initial_ids),
+            order="random" if random_order else "lexicographic",
+            items=initial_ids,
+        )
 
     def item_popped(self, item_id: int, endpoint: EndpointRef) -> None:
         self._emit(Event.ITEM_POPPED, item=item_id, endpoint=endpoint.model_dump())

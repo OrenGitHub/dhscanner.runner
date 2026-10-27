@@ -76,6 +76,8 @@ class ScanConfig:
     # ``None`` to disable.
     max_items: typing.Optional[int] = None
     max_wall_clock_s: typing.Optional[float] = None
+    # Initial queue order: lexicographic ( comparable runs ) or random.
+    random_order: bool = False
     # Where the ScanTrace lands. ``None`` -> default under
     # ``agent/.scan_traces/<kb-basename>/<timestamp>/``.
     trace_root: typing.Optional[pathlib.Path] = None
@@ -122,7 +124,13 @@ def run_scan(config: ScanConfig) -> ScanResult:  # pylint: disable=too-many-loca
 
     try:
         trace.scan_started()
-        _seed(queue=queue, digest=digest, trace=trace, kbapi=kbapi)
+        _seed(
+            queue=queue,
+            digest=digest,
+            trace=trace,
+            kbapi=kbapi,
+            random_order=config.random_order,
+        )
         return _drive(
             queue=queue,
             findings=findings,
@@ -146,15 +154,16 @@ def _seed(
     digest: ScanDigest,
     trace: ScanTrace,
     kbapi: KbapiClient,
+    random_order: bool,
 ) -> None:
     # ``findings`` is intentionally absent here: seed-time entries live
     # on the queue + digest only; the per-endpoint history is populated
     # by the first fresh session on each endpoint (\u00a74.6 ritual).
-    seeded = seed_initial_queue(kbapi)
+    seeded = seed_initial_queue(kbapi, random_order=random_order)
     for ref in seeded:
         queue.push_back(ref)
     digest.bootstrap_from_seed(seeded)
-    trace.queue_seeded(queue.snapshot_ids())
+    trace.queue_seeded(queue.snapshot_ids(), random_order=random_order)
     _log.info("seeded %d endpoints (A \u222a B surface)", len(seeded))
 
 

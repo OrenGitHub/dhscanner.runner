@@ -12,8 +12,52 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.41, codegen 1.0.40, kbgen 1.0.47 and queryengine 1.0.71.
+The images are parsers 1.1.41, codegen 1.0.40, kbgen 1.0.47 and queryengine 1.0.73.
 The `.env` at the repo root is the only source of config.
+
+## a testing effort
+
+One testing effort = one sample of the agent's judgment, read by a human:
+
+1. **Fresh kb, plain user flow** ( above ). Run the loop from PowerShell : Git Bash rewrites `/tmp/kb_...` into a Windows path, and a missing kb answers 0 matches silently.
+2. **Randomize 5 endpoints:**
+   ```powershell
+   python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 --use-random-endpoints-order
+   ```
+   Each run picks 5 new endpoints. Run it twice ( 10 endpoints ), plus once without the flag as the lexicographic baseline.
+3. **Inspect the reasoning** in `agent/.scan_traces/<kb>/<timestamp>/trace.jsonl`, per endpoint:
+   - `item_popped` : what is on the desk ( verb, url, bucket, auth evidence, user inputs ).
+   - `kbapi_call` / `kbapi_reply` : which queries, and what came back.
+   - `llm_verdict` : is every claim in `reason_for_verdict` backed by a reply? Check the doubtful ones against the source.
+4. **Write down the ONE most important thing to improve**, with the endpoint and the source lines that show it.
+
+## DSpace: random 5 + 5 + lexicographic 5 ( 2026-10-27 )
+
+queryengine 1.0.73, 567 seeded handlers, 15 sessions, 22 kbapi calls.
+
+| run | endpoints | verdicts |
+|---|---|---|
+| random #1 | `AutoAssignAction`, `CollectionMappedItemLinkRepository`, `ItemTypeProcessor`, `DSpaceSamlAuthRequest`, `OidcAuthentication` | 5 safe |
+| random #2 | `JWTTokenRestAuthenticationServiceImpl`, `ItemAddBundleController` ( POST ), `Util`, `IPAuthentication`, `RestResourceController` ( GET ) | 5 safe |
+| lexicographic | `RestResourceController` DELETE x3, `CommunityAdminGroupRestController`, `ItemTemplateRestController` | 5 safe |
+
+Every verdict rests on one fact: `SelectControlFlowReachableSinks` from the handler returned 0.
+
+### the most important thing to improve
+
+**Nothing in the agent: it reasons correctly on top of the kb.** The agent works on the kb, not on the source, so 0 sinks in the kb rightly means `safe`.
+
+The one thing worth fixing is in the kb: virtual dispatch through the generic REST controller.
+`DELETE /api/{apiCategory}/{model}/{uuid}` ( `RestResourceController.java:1120` ) shows it:
+
+1. `deleteInternal` picks the repository by name at runtime : `utils.getResourceRepository(apiCategory, model)`, ie `getBean(apiCategory + "." + modelPlural)` ( `Utils.java:283` ).
+2. `DSpaceRestRepository.deleteById` ( line 194 ) calls `getThisRepository().delete(context, id)`, effectively `this.delete` through the spring proxy. The static target is the base `delete` ( line 217 ), which only throws.
+3. The real work and the real auth are in the overrides, eg `@PreAuthorize("hasPermission(#id, 'ITEM', 'DELETE')")` in `ItemRestRepository.java:151`.
+
+The kb stops at step 2, so these handlers look `pre_auth` with 0 sinks.
+Expanding step 2 to every override ( base class -> subclass, the sibling of G3 in `docs/DSpace.md` ) is the fix. It is not a quick win.
+
+Smaller, already listed below: the prompt still cites earlier verdicts and base rates as evidence, and 7 of the 10 random picks are `UNKNOWN {?}` helper methods, not routes.
 
 ## DSpace: first 5 agent loop iterations ( 2026-10-26 )
 
@@ -79,7 +123,7 @@ The Python workers are the bottleneck:
 ## open issues
 
 - [#111](https://github.com/OrenGitHub/dhscanner.runner/issues/111) invalid status response during kbgen
-- [#112](https://github.com/OrenGitHub/dhscanner.runner/issues/112) deterministic + random seeds
+- [#112](https://github.com/OrenGitHub/dhscanner.runner/issues/112) deterministic + random seeds ( fixed by [#117](https://github.com/OrenGitHub/dhscanner.runner/pull/117) )
 - [#113](https://github.com/OrenGitHub/dhscanner.runner/issues/113) authenticated spring endpoints
 - [#114](https://github.com/OrenGitHub/dhscanner.runner/issues/114) research: cut kb creation time
 

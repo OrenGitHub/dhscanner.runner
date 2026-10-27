@@ -79,6 +79,7 @@ def check_handlers(kb_location: str) -> list[str]:
         "authentications": ["Unauthenticated", "Authenticated"],
         "routeContainsUrlParts": None,
         "maxNumHttpHandlers": 100,
+        "orderEndpointsLexicographically": True,
     })
     failures = []
     for filename, (line_start, line_end) in HANDLERS.items():
