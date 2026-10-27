@@ -14,7 +14,8 @@ simple dev script to send repo for dhscanner inspection
 """
 
 CLI_RUN_DESC: typing.Final[str] = """
-scan a directory: allocate a job id, upload files, run analysis, fetch sarif
+scan a directory: allocate a job id, upload files, run analysis, then print
+the kb filename ( --create_knowledge_base_from ) or fetch sarif ( --scan_dirname )
 """
 
 CLI_MANAGE_DESC: typing.Final[str] = """
@@ -57,8 +58,14 @@ run the final accepted plan's cleanup_commands at exit even on success
 (default: leave the app running so the next loop step can talk to it)
 """
 
+CLI_CREATE_KNOWLEDGE_BASE_FROM_HELP: typing.Final[str] = """
+relative / absolute path of the dir to build a knowledge base from
+( prints the kb filename for `python -m agent.loop --use_kb` )
+"""
+
 CLI_SCAN_DIRNAME_HELP: typing.Final[str] = """
-relative / absolute path of the dir you want to scan
+( soon deprecated ) relative / absolute path of the dir you want to scan
+with the built-in queries ( prints / saves sarif )
 """
 
 CLI_IGNORE_TESTING_CODE_HELP: typing.Final[str] = """
@@ -71,10 +78,6 @@ save the output in sarif format
 
 CLI_USE_EXTERNAL_VPS: typing.Final[str] = """
 connect to an external virtual private server
-"""
-
-CLI_WITH_AGENT: typing.Final[str] = """
-use an LLM agent for adaptive query planning
 """
 
 CLI_GET_ALL_JOB_IDS_HELP: typing.Final[str] = """
@@ -107,7 +110,7 @@ simple dev script to run kb api queries
 """
 
 EXPLORE_WITH_AGENT_USE_KB_HELP: typing.Final[str] = """
-kb filename returned from `python -m cli run --with_agent` flow
+kb filename returned from `python -m cli run --create_knowledge_base_from` flow
 """
 
 HTTPS_PORT: typing.Final[int] = 443
@@ -240,9 +243,18 @@ class CliArgparse:
             description=CLI_RUN_DESC,
             help='scan a directory',
         )
-        run_parser.add_argument(
+        # Exactly one input dir. The default flow builds a kb for the
+        # agent loop; --scan_dirname keeps the old sarif flow until it
+        # gets deprecated.
+        run_input = run_parser.add_mutually_exclusive_group(required=True)
+        run_input.add_argument(
+            '--create_knowledge_base_from',
+            type=existing_non_empty_dirname,
+            metavar='dir/to/build/kb/from',
+            help=CLI_CREATE_KNOWLEDGE_BASE_FROM_HELP,
+        )
+        run_input.add_argument(
             '--scan_dirname',
-            required=True,
             type=existing_non_empty_dirname,
             metavar='dir/you/want/to/scan',
             help=CLI_SCAN_DIRNAME_HELP,
@@ -260,13 +272,6 @@ class CliArgparse:
             type=valid_output_file,
             metavar='save/sarif/to/output.json',
             help=CLI_SAVE_SARIF_OUTPUT_HELP,
-        )
-        run_parser.add_argument(
-            '--with_agent',
-            required=False,
-            default=False,
-            action='store_true',
-            help=CLI_WITH_AGENT,
         )
 
         # ---- manage: operator helpers -----------------------------------
@@ -371,12 +376,15 @@ class CliArgparse:
         # {'run', 'manage'} via `required=True` on the subparsers
         # group, so the else-branch is exhaustive (no fallthrough).
         if ns.command == 'run':
+            with_agent = ns.create_knowledge_base_from is not None
+            if with_agent and ns.save_sarif_to is not None:
+                run_parser.error('--save_sarif_to goes with --scan_dirname ( kb creation emits no sarif )')
             return CliRunArgparse(
                 use_external_vps=ns.use_external_vps,
-                scan_dirname=ns.scan_dirname,
+                scan_dirname=ns.create_knowledge_base_from if with_agent else ns.scan_dirname,
                 ignore_testing_code=ns.ignore_testing_code,
                 save_sarif_to=ns.save_sarif_to,
-                with_agent=ns.with_agent,
+                with_agent=with_agent,
             )
 
         if ns.command == 'launch-local-app':
@@ -408,6 +416,8 @@ class CliRunArgparse(CliArgparse):
     # non-Optional here because argparse already enforced
     # required=True on the 'run' subparser — by the time we
     # construct this class, both fields are guaranteed to be set.
+    # scan_dirname holds whichever input dir flag was given;
+    # with_agent is True iff it was --create_knowledge_base_from.
     scan_dirname: pathlib.Path
     ignore_testing_code: bool
     save_sarif_to: typing.Optional[pathlib.Path]

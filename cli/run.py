@@ -14,6 +14,7 @@ import logging
 import aiofiles
 import aiohttp
 import requests
+import dotenv
 from cli.argparse_wrapper import (
     CliArgparse,
     CliRunArgparse,
@@ -25,6 +26,8 @@ from cli import logger as cli_logger
 
 LOCALHOST: typing.Final[str] = 'http://localhost'
 PORT: typing.Final[int] = 8000
+
+REPO_ROOT_DOTENV: typing.Final[pathlib.Path] = pathlib.Path(__file__).resolve().parent.parent / '.env'
 
 SUFFIXES: typing.Final[set[str]] = {
     'py', 'ts', 'js', 'php', 'rb', 'java', 'cs', 'go', 'yaml', 'yml'
@@ -744,7 +747,14 @@ def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> No
             ):
                 if analyze(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args, directories, filenames):
                     for _ in range(MAX_NUM_CHECKS):
-                        what_should_happen_next = check(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
+                        try:
+                            what_should_happen_next = check(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
+                        except requests.exceptions.ConnectionError as e:
+                            # a dropped status poll is not a failed scan : the job
+                            # keeps running server side, so just poll again
+                            logging.warning('[ step 4 ] status poll failed ( %s ), retrying', e)
+                            time.sleep(NUM_SECONDS_BETEEN_STEP_CHECK)
+                            continue
                         if what_should_happen_next != 'Finished':
                             logging.info('[ step 4 ] now %s', what_should_happen_next)
                             time.sleep(NUM_SECONDS_BETEEN_STEP_CHECK)
@@ -808,6 +818,9 @@ def manage(parsed_args: CliManageArgparse, APPROVED_URL: str, BEARER_TOKEN: str)
 
 def main_entry() -> None:
     parsed = CliArgparse.parse()
+    # the repo-root .env is the single source of config ( approved url,
+    # bearer token, openai key ) : it wins over stale shell exports
+    dotenv.load_dotenv(dotenv_path=REPO_ROOT_DOTENV, override=True)
     logging.info('[ step 0 ] required args ok 😊')
     # The launch-local-app subcommand only ever drives a local
     # subprocess + OpenAI; it never reaches an approved url or a
@@ -820,6 +833,10 @@ def main_entry() -> None:
     elif APPROVED_URL_0 := os.getenv('APPROVED_URL_0', None):
         if APPROVED_BEARER_TOKEN_0 := os.getenv('APPROVED_BEARER_TOKEN_0', None):
             main(parsed, APPROVED_URL_0, APPROVED_BEARER_TOKEN_0)
+        else:
+            logging.error('APPROVED_BEARER_TOKEN_0 missing ( set it in %s )', REPO_ROOT_DOTENV)
+    else:
+        logging.error('APPROVED_URL_0 missing ( set it in %s )', REPO_ROOT_DOTENV)
 
 
 if __name__ == "__main__":

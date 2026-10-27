@@ -18,7 +18,7 @@
 #     -f compose/compose.agent.yaml \
 #     up -d
 #
-# The non-agent production flow (python -m cli run without --with_agent)
+# The non-agent production flow (python -m cli run --scan_dirname)
 # does not need this file \u2014 the FastAPI app at :8000 reaches
 # queryengine through the internal compose network.
 

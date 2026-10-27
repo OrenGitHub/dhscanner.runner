@@ -10,7 +10,7 @@ for a follow-up plan, up to ``max_iterations`` attempts.
 
 This is step 2 of the top-level main loop:
 
-    1. build the kb (already done by `cli.py run --with_agent`)
+    1. build the kb (already done by `python -m cli run --create_knowledge_base_from`)
  -> 2. launch the underlying application on localhost  (THIS MODULE)
     3. let an LLM interact with the kb
     4. fuzz the app with data collected in step 3
