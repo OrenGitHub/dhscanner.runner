@@ -259,6 +259,9 @@ class SessionResult:
     # one of the hard budgets fired. The outer loop uses this to decide
     # whether to re-enqueue at the back (\u00a72.4).
     forced_inconclusive: bool = False
+    # True iff the verdict came from :func:`run_zero_sinks_check`, with
+    # no LLM session at all.
+    zero_sinks: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +547,79 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
             f"OpenAI session exceeded {max_rounds} rounds without a verdict; "
             "re-enqueue at back."
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zero sinks : no LLM session at all.
+#
+# Most handlers reach no tracked sink, and there the LLM only restates
+# the one kb fact ( 9 of 10 sampled DSpace endpoints, docs/status.md ).
+# So the loop asks the kb first, and settles 0 sinks as `safe` itself.
+# The pre-check is traced as kbapi call 0, so the LLM's own calls stay
+# 1..N when a sink is found and the session runs as usual.
+# ---------------------------------------------------------------------------
+
+
+_SINK_KINDS: typing.Final[tuple[str, ...]] = (
+    "FileOperationRead",
+    "FileOperationWrite",
+    "FileOperationDelete",
+    "OpenRedirect",
+    "SSRF",
+    "SQL",
+)
+_ZERO_SINKS_MAX_NUM_HOPS: typing.Final[int] = 10
+_ZERO_SINKS_MAX_NUM_SINKS: typing.Final[int] = 50
+
+
+def run_zero_sinks_check(
+    *,
+    endpoint: EndpointRef,
+    kbapi_client: KbapiClient,
+    trace_hook: typing.Optional[SessionTraceHook] = None,
+) -> typing.Optional[SessionResult]:
+    """A ``safe`` verdict when no tracked sink is control-flow reachable
+    from the handler, else ``None`` ( a sink, or a kbapi failure ) and
+    the caller runs a fresh LLM session."""
+    hook: SessionTraceHook = trace_hook or _NullHook()
+    started = time.monotonic()
+    tag = "SelectControlFlowReachableSinks"
+    contents: dict[str, typing.Any] = {
+        "from": endpoint.handler_location.model_dump(),
+        "sinks": list(_SINK_KINDS),
+        "maxNumHops": _ZERO_SINKS_MAX_NUM_HOPS,
+        "maxNumSinks": _ZERO_SINKS_MAX_NUM_SINKS,
+    }
+    query = {"tag": tag, "contents": contents}
+    hook.kbapi_call(0, query)
+    try:
+        reply = kbapi_client.query(tag, contents)
+    except KbapiError as exc:
+        reply = {"tag": "KbapiError", "contents": {"error": str(exc)}}
+    hook.kbapi_reply(0, reply)
+
+    found = reply.get("contents") or {}
+    if reply.get("tag") != "FoundControlFlowReachableSinks" or found.get("total") != 0:
+        return None
+
+    loc = endpoint.handler_location
+    return SessionResult(
+        response=LlmResponse(
+            verdict=Verdict.SAFE,
+            reason_for_verdict=(
+                "no tracked sink reachable: SelectControlFlowReachableSinks from "
+                f"{loc.filename}:{loc.lineStart}-{loc.lineEnd} returned 0 matches "
+                f"for {', '.join(_SINK_KINDS)} within {_ZERO_SINKS_MAX_NUM_HOPS} hops "
+                "( settled by the outer loop, no LLM session )"
+            ),
+            enqueue=[],
+        ),
+        kb_queries=[query],
+        kb_responses=[reply],
+        kb_query_budget_used=1,
+        wall_clock_seconds=time.monotonic() - started,
+        zero_sinks=True,
     )
 
 
