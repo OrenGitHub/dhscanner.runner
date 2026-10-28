@@ -49,6 +49,7 @@ class Event(str):
     KBAPI_CALL = "kbapi_call"
     KBAPI_REPLY = "kbapi_reply"
     LLM_VERDICT = "llm_verdict"
+    ZERO_SINKS_VERDICT = "zero_sinks_verdict"
     ENQUEUE = "enqueue"
     DIGEST_SNAPSHOT = "digest_snapshot"
     ITEM_COMPLETED = "item_completed"
@@ -159,6 +160,14 @@ class ScanTrace:
     def llm_verdict(self, item_id: int, response: LlmResponse) -> None:
         self._emit(
             Event.LLM_VERDICT,
+            item=item_id,
+            verdict=response.verdict.value,
+            reason_for_verdict=response.reason_for_verdict,
+        )
+
+    def zero_sinks_verdict(self, item_id: int, response: LlmResponse) -> None:
+        self._emit(
+            Event.ZERO_SINKS_VERDICT,
             item=item_id,
             verdict=response.verdict.value,
             reason_for_verdict=response.reason_for_verdict,

@@ -226,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("scan complete")
     print(f"  items processed    : {result.items_processed}")
+    print(f"  0 sinks ( no LLM ) : {result.zero_sinks}")
     print(f"  queue remaining    : {result.queue_remaining}")
     print(f"  trace root         : {result.trace_root}")
     for verdict, count in sorted(result.verdict_counts.items(), key=lambda kv: kv[0].value):

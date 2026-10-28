@@ -6,6 +6,7 @@ Main loop body, verbatim from the doc::
     2. history  = findings_store.get(endpoint)
     3. bundle (endpoint, history) into slot #3 of the fresh-session seed
     4. fresh LLM session, up to the per-session budget
+       ( none when the kb reports 0 reachable sinks: `safe` right away )
     5. parse guardrailed {verdict, reason_for_verdict, enqueue: [...]}
     6. APPEND a new record to findings_store[endpoint]  (never overwrite)
     7. reify enqueues; update ScanDigest; append to ScanTrace
@@ -41,6 +42,7 @@ from agent.loop.session import (
     SessionResult,
     openai_api_key_present,
     run_item_session,
+    run_zero_sinks_check,
 )
 from agent.loop.trace import ScanTrace, default_trace_root
 from agent.loop.types import (
@@ -91,6 +93,8 @@ class ScanResult:
     queue_remaining: int
     trace_root: pathlib.Path
     verdict_counts: dict[Verdict, int]
+    # Items settled `safe` with 0 sinks, without an LLM session.
+    zero_sinks: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +187,7 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
 ) -> ScanResult:
     started = time.monotonic()
     item_id = 0
+    zero_sinks = 0
     verdict_counts: dict[Verdict, int] = {v: 0 for v in Verdict}
 
     while True:
@@ -211,20 +216,28 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
 
         history = findings.get(endpoint)
         hook = _TraceHook(trace, item_id)
-        session_result = run_item_session(
+        session_result = run_zero_sinks_check(
             endpoint=endpoint,
-            history=history,
-            digest_snapshot=snapshot,
             kbapi_client=kbapi,
-            model=config.model,
-            kbapi_query_budget=config.kbapi_query_budget,
-            enqueue_budget=config.enqueue_budget,
-            wall_clock_seconds=config.wall_clock_per_session_s,
-            openai_timeout_seconds=config.openai_timeout_s,
             trace_hook=hook,
         )
-
-        trace.llm_verdict(item_id, session_result.response)
+        if session_result is None:
+            session_result = run_item_session(
+                endpoint=endpoint,
+                history=history,
+                digest_snapshot=snapshot,
+                kbapi_client=kbapi,
+                model=config.model,
+                kbapi_query_budget=config.kbapi_query_budget,
+                enqueue_budget=config.enqueue_budget,
+                wall_clock_seconds=config.wall_clock_per_session_s,
+                openai_timeout_seconds=config.openai_timeout_s,
+                trace_hook=hook,
+            )
+            trace.llm_verdict(item_id, session_result.response)
+        else:
+            zero_sinks += 1
+            trace.zero_sinks_verdict(item_id, session_result.response)
         record = _record_from_session(item_id, session_result)
         findings.append_session(endpoint, record)
         verdict_counts[session_result.response.verdict] += 1
@@ -256,6 +269,7 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
         queue_remaining=len(queue),
         trace_root=trace.root,
         verdict_counts=verdict_counts,
+        zero_sinks=zero_sinks,
     )
 
 

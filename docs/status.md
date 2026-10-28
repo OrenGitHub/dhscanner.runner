@@ -42,6 +42,67 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
 
+## DSpace: random 5, source first, after #119 ( 2026-10-27, evening )
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-0.pl`, 281MB ), parsers 1.1.42, kbgen 1.0.47, queryengine 1.0.74, DSpace `a5b0f0fc17`. 5 sessions, 7 kbapi calls.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261027T190012Z-97687`.
+
+| endpoint | the source | kb | verdict |
+|---|---|---|---|
+| `ReviewAction.execute` ( `:44` ) | request params only pick a `switch` case; the cases reach workflow DB writes ( `processAccept`, `super.processRejectPage`, `deleteWorkflowByWorkflowItem` ) | 0 sinks, **and 0 calls from the `switch` body** | safe ✔ |
+| `WorkflowItemStepLinkRepository.getStep` ( `:59` ) | DB finds keyed by a typed `Integer` | 0 sinks | safe ✔ |
+| `ExternalSourceItemUriListHandler.handle` ( `:48` ) | regex, then `UUID.fromString`, then `itemService.find` | 0 sinks | safe ✔ |
+| `SubmissionService.findOriginalFile` ( `:535` ) | `replaceFile` param, then `UUID.fromString`, then `bitstreamService.find` | 0 sinks | safe ✔ |
+| `AuthenticationRestController.shortLivedTokenResponse` ( `:210` ) | private helper of POST `/shortlivedtokens` ( `@PreAuthorize AUTHENTICATED`, `:207` ), mints a JWT | 0 sinks, bucket `pre_auth` | safe ✔ |
+
+All 5 verdicts are right, given the kb and given the source. All 5 are `UNKNOWN {?}` helpers, not routes.
+The agent still retries an empty sink query at 20 hops ( items 1, 4 ) and still cites base rates ( "unauth=424 vs PreAuthorize=143", "recent verdicts all safe" ).
+
+### the most important thing to improve
+
+**The Java parser drops every `switch` case body.** In `ReviewAction.execute` the kb has the calls at lines 47, 48 and 59, and nothing from lines 49-58:
+`processAccept` ( `:50` ), `super.processRejectPage` ( `:52` ) and `processSubmitterIsDeletedPage` ( `:54` ) are not call sites in the kb, so nothing behind them can ever be reached.
+
+The cause is in `dhscanner.service.parsers/src/JavaParser.y:1094` : `stmt_switch` keeps only the scrutinee ( `stmtExp $13` ), and every `switch_case` / `switch_case_child` returns `()`.
+`exp_switch` ( `:815` ) does the same for switch expressions.
+The TS parser already shows the fix : `stmtSwitch` ( `TsParser.y:743` ) lowers to an `Ast.StmtBlock` of all the case bodies, concatenated.
+
+DSpace has 106 `switch` statements in 74 main-code files ( 15 arrow-style `case ... ->` ). Every call inside them is missing from the kb today: call edges, sinks, auth checks.
+
+**Quick win:** yes. It is one grammar rule plus its actions. Keep `stmt_body` children ( and `exp` children of arrow cases, as `StmtExp` ), and build a `StmtBlock` like TS does.
+It goes through the parsers strict-progress gate ( `dhscanner.1.parsers/AGENTS.md` ), then a parsers release, then a fresh kb.
+( Deferred for now: looking for more fundamental flaws first. )
+
+### a second five, same kb
+
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261027T191652Z-97640`. 5 sessions, 7 kbapi calls.
+
+| endpoint | the source | kb | verdict |
+|---|---|---|---|
+| `DSpaceRestRepository.upload` ( `:418` ) | base method, only throws | 0 sinks | safe ✔ |
+| GET `/workflowGroups/{workflowRole}` ( `CollectionGroupRestController.java:384` ) | `@PreAuthorize` READ + in-body ADMIN check ( `AuthorizeUtil.java:306` ); `workflowRole` checked against a role map ( `CollectionRestRepository.java:667` ); DB lookups through the Criteria API ( `CollectionRoleDAOImpl.java:60` ), which is not a catalog sink | 0 sinks, `@PreAuthorize` | safe ✔ |
+| `SpecialGroupClaimProvider.getValue` ( `:49` ) | `getSpecialGroups` over the auth methods, no catalog sink | 0 sinks | safe ✔ |
+| `OrcidLoginFilter.redirectAfterSuccess` ( `:129` ) | `sendRedirect(redirectUrl)` ( `:151` ) behind a host allow-list, `Strings.CI.equalsAny` ( `:149` ) | sink + dataflow + `TopLevelIfThenElse` sanitizer | safe ✔ |
+| `JWTTokenRestAuthenticationServiceImpl.getWwwAuthenticateHeaderValue` ( `:195` ) | builds a header string, no sink | 0 sinks | safe ✔ |
+
+All 5 are right, and this time the kb matches the source too ( given the catalog ).
+`OrcidLoginFilter` is the first endpoint across all efforts that runs the whole pipeline: sink, then dataflow, then sanitizer, then a correct exact-host-match argument.
+
+Across the 10 endpoints of this evening: 9 had 0 sinks, and the LLM only restated that ( ~25-30 s each ). The one with a sink is where the LLM did real work ( 58 s ).
+8 of the 10 are not routes.
+
+### done: 0 sinks -> no LLM session
+
+The loop now asks the kb first ( `SelectControlFlowReachableSinks` from the handler, all 6 sink kinds, 10 hops ).
+On 0 matches it records `safe` itself, with no LLM session. Otherwise the session runs as before.
+In the trace that is kbapi call 0 plus a `zero_sinks_verdict` event ( instead of `llm_verdict` ), and the cli summary prints `0 sinks ( no LLM )`.
+
+20 random DSpace endpoints, same kb: 20 settled with 0 sinks, 0 LLM sessions, 245 s ( ~12 s per item, vs 24-59 s before ).
+
+**The next wall is the kb query itself:** every kbapi query takes ~10.5 s, in this run and in the LLM sessions before it,
+while the query alone measured p50 0.04 s in the #119 bench. So nearly all of it is fixed per-query overhead in queryengine ( likely loading the 281MB kb per request ).
+567 handlers x ~12 s is still ~1.9 hours. Cutting that overhead is the next quick win for running time.
+
 ## DSpace: random 5, source first ( 2026-10-27 )
 
 Same kb as below ( `/tmp/kb_XXXXXXXX1-0.pl`, same images, same DSpace commit ). 5 sessions, 5 kbapi calls, 31-44 s each.
