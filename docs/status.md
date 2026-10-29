@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-10-27
+Last updated: 2026-10-29
 
 ## the user flow under test
 
@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.42, codegen 1.0.40, kbgen 1.0.47 and queryengine 1.0.74.
+The images are parsers 1.1.44, codegen 1.0.41, kbgen 1.0.48 and queryengine 1.0.74.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -41,6 +41,76 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Weblate: random 5 ( 2026-10-29 ) : 0 endpoints
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-1.pl`, 51MB, 4 m 17 s ), parsers 1.1.43, codegen 1.0.41, kbgen 1.0.48, queryengine 1.0.74, Weblate `0195e965e6` ( Django + DRF, ~450-500 routes ).
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-1/20261029T045055Z-40890`.
+
+```
+items processed    : 0
+queue remaining    : 0
+```
+
+The loop drained with 0 items and exited 0, silently. There was nothing to sample, so this effort is about the layers under the agent.
+
+| layer | what is missing | evidence |
+|---|---|---|
+| parsers | **111 `.py` files fail to parse** : 66% of the non-test source lines ( 122k of 186k ) are not in the kb | `compose-parsers-1` logs `Failed: Location {... colStart = N}`, an offset into the `ast.dump` text |
+| queryengine | no Django / DRF handler recognizer. Python has only `endpoints/python/tornado.pl` ( user input, no handlers ) | `endpoints/api.pl:20-57` : handlers come from nextjs, spring, servlet only |
+| queryengine | Python sinks are `requests.post` ( `sinks/ssrf/python/requests.pl` ) and tornado redirects only | |
+| kb | `weblate/urls.py` parses, but has 0 facts after line 92 : none of the 251 `path(...)` in `real_patterns = [ ... ]` ( `:101` ). `api/urls.py` keeps its top-level `path` / `register` calls | cause not located yet |
+
+The first node each failing file trips on ( one per file, so a file may hide more ):
+
+| node | files | Python |
+|---|---|---|
+| `NamedExpr` ( `:=` ) | 48 | 3.8 |
+| `YieldFrom` | 21 | 3.3 |
+| `TypeAlias` | 16 | 3.12 |
+| `Invert` ( `~` ) | 8 | |
+| `TypeVar` ( PEP 695 `type_params` ) | 6 | 3.12 |
+| `Match` | 6 | 3.10 |
+| `Nonlocal` | 3 | |
+| other | 3 | |
+
+None of these are in `dhscanner.service.parsers/src/PyParser.y`.
+It hits exactly the attack surface: `api/views.py`, `api/serializers.py`, `accounts/views.py`, `trans/views/edit.py`, `utils/requests.py` ( the outbound SSRF guard ) all stop at `NamedExpr`;
+`trans/views/hooks.py` ( the unauth webhooks ) at `TypeAlias`, `vcs/git.py` at `Match`, `gitexport/views.py` at `YieldFrom`.
+
+### the most important thing to improve
+
+**The Python parser has no `NamedExpr` ( walrus, `:=` ).** It is the first failure in 48 of the 111 files, including the whole REST API ( `api/views.py`, 5.3k lines ).
+Example: `accounts/views.py:1334` `if invitation_pk := request.session.get(...)`.
+A Django recognizer comes after this : it can't find handlers in files that are not in the kb.
+
+**Quick win:** yes. One expression rule in `PyParser.y` : `NamedExpr(target, value)` -> an assignment of `value` to `target`, used as an expression ( the value flows on ).
+It goes through the parsers strict-progress gate ( `dhscanner.1.parsers/AGENTS.md` ), then a parsers release, then a fresh kb.
+`YieldFrom` ( 21 ) and `TypeAlias` ( 16, can be dropped ) are the next two.
+
+Also seen:
+
+- 0 handlers is as silent as a missing kb ( rough edge 5 below ) : the loop should say "0 handlers seeded" and exit non-zero.
+- `--ignore_testing_code true` keeps Django's `tests.py` files ( 21 in the kb, eg `wladmin/tests.py` ), and a 1st-party `weblate.trans.tests.test_models.BaseTestCase` super shows up as `kb_class_has_3rd_party_super`.
+- [#111](https://github.com/OrenGitHub/dhscanner.runner/issues/111) again : 2 `invalid status response` polls during kbgen.
+
+### done: Python parser coverage on Weblate, 83.2% -> 95.4% ( [#124](https://github.com/OrenGitHub/dhscanner.runner/issues/124) )
+
+`dhscanner.service.parsers/py_agent_loop.py` : the Python sibling of `java_agent_loop.py` ( same strict-progress gate ), over Weblate's 630 production `.py` files ( tests and migrations excluded ).
+It runs on the runner compose chain + `compose/compose.parsers-dev.yaml` ( `frontpy` on `:5006` ). Unlike Java, the LLM may edit `PyLexer.x` : every missing construct is a new node name, ie a new keyword.
+`--target-node <Node>` picks only files failing on that node, `--baseline-only` prints coverage + the failing-node histogram.
+
+| iteration | native node | lowered to | files progressed | coverage |
+|---|---|---|---|---|
+| baseline | | | | 524 / 630 ( 83.2% ) |
+| 1 | `NamedExpr` ( `:=` ) | `Ast.ExpAssign` ( the LLM dropped the target, fixed by hand ) | 47 | 560 ( 88.9% ) |
+| 2 | `YieldFrom` | its value expression | 25 | 584 ( 92.7% ) |
+| 3 | `TypeAlias` | `Ast.StmtAssign` | 16 | 597 ( 94.8% ) |
+| 4 | `TypeVar` ( PEP 695 `def f[T]` / `class C[T]` ) | dropped ( type only ) | 12 | **601 ( 95.4% )** |
+
+0 Happy conflicts before and after. By lines it is lower : the remaining failures are big files.
+Left : `Match` 9, `bound` ( `[T: Foo]` ) 8, `Invert` 8, `Nonlocal` 2, other 2.
+Next : a fresh Weblate kb through the plain user flow, then the `urls.py` facts gap, then the Django / DRF recognizer.
 
 ## DSpace: random 5, source first, after #119 ( 2026-10-27, evening )
 
@@ -100,8 +170,32 @@ In the trace that is kbapi call 0 plus a `zero_sinks_verdict` event ( instead of
 20 random DSpace endpoints, same kb: 20 settled with 0 sinks, 0 LLM sessions, 245 s ( ~12 s per item, vs 24-59 s before ).
 
 **The next wall is the kb query itself:** every kbapi query takes ~10.5 s, in this run and in the LLM sessions before it,
-while the query alone measured p50 0.04 s in the #119 bench. So nearly all of it is fixed per-query overhead in queryengine ( likely loading the 281MB kb per request ).
-567 handlers x ~12 s is still ~1.9 hours. Cutting that overhead is the next quick win for running time.
+while the query alone measured p50 0.04 s in the #119 bench.
+567 handlers x ~12 s is still ~1.9 hours.
+
+### next quick win ( not done yet ): compile the kb once, at upload
+
+**The cause:** every kbapi query starts a fresh `swipl` process ( `Swipl.hs` `runSwiplWithTimeout` ), and every template opens with `:- [ '{KNOWLEDGE_BASE}' ]`.
+So every query re-parses the whole 281MB `kb_XXX.pl` source ( ~846k facts ).
+
+**Measured** inside the running queryengine container ( SWI-Prolog 9.0.4 ), current DSpace kb, loaded the way the templates load it:
+
+| load | time | facts ( `kb_call_resolved` / `kb_called_from` ) |
+|---|---|---|
+| `kb.pl` ( today ) | **10.8 s** | 93477 / 92259 |
+| `kb.qlf` ( compiled ) | **0.5 s** | 93477 / 92259 |
+| `qcompile(kb)`, once | 13.5 s, a 77MB `.qlf` | |
+
+~20x per query, same facts. The templates' `:- dynamic` declarations in front of the `.qlf` load still work.
+
+**The fix**, in `dhscanner.service.queryengine`:
+
+1. `postUploadkbR` ( `Main.hs:79` ): after writing `kb_XXX.pl`, run `swipl -g "qcompile('kb_XXX'), halt"` once ( +13.5 s per upload ).
+2. `runJsonTemplate` ( `JsonTemplate.hs:33` ): fill `{KNOWLEDGE_BASE}` with `kb_XXX.qlf` when it exists, else the `.pl` ( so old kbs still work ).
+
+**Expected:** a 0-sink item ~12 s -> ~1 s, every LLM session's kbapi call ~10 s cheaper, the seed query faster too.
+A full DSpace pass ~1.9 h -> ~10 min.
+Ship : queryengine push to `main` ( CI publishes the image ), runner compose bump, then a fresh kb + loop through the plain user flow to confirm.
 
 ## DSpace: random 5, source first ( 2026-10-27 )
 
