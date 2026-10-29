@@ -32,6 +32,7 @@
 #
 #     parsers    4001 -> 3000
 #     frontjava  5005 -> 5000   (per-language convention: 500x host port)
+#     frontpy    5006 -> 5000   (`py_agent_loop.py`)
 #
 # If you add host ports for other fronts here ( frontts, frontphp, ... )
 # to drive their loops through this same chain, keep them on 500x so
@@ -48,3 +49,7 @@ services:
   frontjava:
     ports:
       - "5005:5000"
+
+  frontpy:
+    ports:
+      - "5006:5000"
