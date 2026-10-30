@@ -1,0 +1,36 @@
+# Dev-only override for testing codegen / kbgen / queryengine from source
+# before a release. `compose.prebuilt.yaml` points each of them at its
+# published Dockerhub image ( `orenishdocker/dhscanner-<service>:<ver>-x64` ).
+# This override swaps in a local `build:` of each service Dockerfile, so an
+# unreleased change can go through the plain user flow ( cli scan +
+# agent.loop ). For parsers, see `compose.parsers-dev.yaml`.
+#
+# Append it LAST on the compose chain so it wins over compose.prebuilt.yaml :
+#
+#   docker compose --env-file .env \
+#     -f ./compose/compose.base.yaml \
+#     -f ./compose/compose.app.yaml \
+#     -f ./compose/compose.fronts.yaml \
+#     -f ./compose/compose.prebuilt.yaml \
+#     -f ./compose/compose.workers.yaml \
+#     -f ./compose/compose.agent.yaml \
+#     -f ./compose/compose.services-dev.yaml \
+#     up -d --build
+services:
+  codegen:
+    build:
+      context: ../dhscanner.core/dhscanner.service.codegen
+      dockerfile: Dockerfile
+    image: compose-codegen
+
+  kbgen:
+    build:
+      context: ../dhscanner.core/dhscanner.service.kbgen
+      dockerfile: Dockerfile
+    image: compose-kbgen
+
+  queryengine:
+    build:
+      context: ../dhscanner.core/dhscanner.service.queryengine
+      dockerfile: Dockerfile
+    image: compose-queryengine

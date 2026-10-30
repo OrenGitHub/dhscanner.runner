@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-10-29
+Last updated: 2026-10-30
 
 ## the user flow under test
 
@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.44, codegen 1.0.41, kbgen 1.0.48 and queryengine 1.0.74.
+The images are parsers 1.1.45, codegen 1.0.42, kbgen 1.0.49 and queryengine 1.0.75.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -41,6 +41,46 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Weblate: random 5, after #124 ( 2026-10-29, evening ) : still 0 endpoints
+
+Fresh kb through the plain user flow ( `/tmp/kb_XXXXXXXX1-0.pl`, 80MB vs 51MB before, 6 m 12 s ), parsers 1.1.44, same Weblate `0195e965e6`.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261029T193558Z-43453`.
+
+```
+seeded 0 endpoints (A ∪ B surface)
+items processed    : 0
+```
+
+The parser fix landed: `api/views.py` ( 549 kb lines ) and `trans/views/hooks.py` ( 60 ) are now in the kb, and 67 files fail to parse across the whole scan, down from 111.
+`accounts/views.py` and `vcs/git.py` are still missing ( they fail on `Match` ).
+The loop still seeds nothing, because the parser was never the blocker for seeding.
+
+### the most important thing to improve
+
+**queryengine has no Django / DRF handler recognizer.** `predicates/endpoints/api.pl:3-8` loads only tornado ( user input only, no handlers ), nextjs, express, echo, spring and servlet.
+Weblate's views are in the kb now, but no rule turns them into endpoints, so the agent has nothing to sample.
+Not a quick win: it needs a new `predicates/endpoints/python/django.pl` ( `path(...)` / DRF `router.register` -> view function / `ViewSet` methods ). Tracked in [#126](https://github.com/OrenGitHub/dhscanner.runner/issues/126).
+
+**Found on the way, a quick win:** the `urls.py` facts gap ( next section ) is kbgen, not the parser. The module-level callable of `weblate/urls.py` is 5.3 MB of bitcode, and kbgen answers **413** : its Yesod instance ( `dhscanner.service.kbgen/src/Main.hs:39` ) keeps the default 2 MB `maximumContentLength`, while codegen raised its limit to 256 MB ( `dhscanner.service.codegen/src/Main.hs:48` ).
+The kbgen worker logs it as `KBGEN_FAILED ... exception(s): no exceptions`, with no status. `weblate/settings_docker.py` is dropped the same way.
+
+### done: Django endpoint recognizer, Weblate 0 -> 156 handlers ( [#126](https://github.com/OrenGitHub/dhscanner.runner/issues/126) )
+
+queryengine `predicates/endpoints/python/django.pl` : `django.urls.path` / `re_path( Url, View )` -> the verb methods of a class-based view ( `X.as_view()`, the nearest definition up its 1st party supers ), or a function view ( verb `Unknown` ).
+An absolute import reaches the kb by name, so a dotted module `a.b.c` is 1st party when the kb has a definition in `a/b/c.py` or `a/b/c/__init__.py`.
+It needed one fix per layer :
+
+| # | layer | fix |
+|---|---|---|
+| G0 | kbgen 1.0.49 | `maximumContentLength` 64 MB ( was the Yesod default 2 MB ) : the 5.3 MB module-level callable of `weblate/urls.py` got a 413, so the kb had 0 routes. The kbgen worker now logs the http status |
+| G1 | parsers 1.1.45 | `import a.b.c` binds the root name `a`, like python ( it bound the whole dotted string, so `a.b.c.X` resolved to `Unknown.b.c.X` ) |
+| G2 | parsers 1.1.45 | every class gets a `<dhscanner-instrumentation>[default-method]` method, so a class with no methods ( `class TermsView(LegalView): page = "terms"` ) still has a `kb_class_def` and its supers |
+| G2b | codegen 1.0.42 + kbgen 1.0.49 | a class name binds in the enclosing scope, so a super class from the same file resolves ( 309 -> 2,470 `kb_class_has_1st_party_super` on Weblate ) |
+
+Measured through the plain user flow : `SelectHttpHandlers` returns **156** handlers ( 24 Get, 21 Post, 111 Unknown ), now a CI floor ( `tests/kbapi/weblate_endpoints.py` ).
+Left : `Match` statements ( `accounts/views.py`, `trans/views/edit.py`, `trans/views/basic.py` : ~61 routes ), `include(...)` url prefixes, DRF routers, views wrapped in `urls.py` ( `management_permission_required(view)` ), and class-based views that inherit every verb from django's generic views ( 30 classes ).
+`compose/compose.services-dev.yaml` runs codegen / kbgen / queryengine from source, like `compose.parsers-dev.yaml` does for parsers.
 
 ## Weblate: random 5 ( 2026-10-29 ) : 0 endpoints
 
