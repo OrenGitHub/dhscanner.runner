@@ -77,6 +77,7 @@ class Kbgen(AbstractWorker):
                         )
                     )
                     return facts
+                emessage = f'http status {response.status}'
 
         except aiohttp.ClientError as e:
             emessage = str(e)
