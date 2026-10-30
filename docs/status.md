@@ -42,6 +42,54 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
 
+## Weblate: random 5, source first, after the python sinks ( #129, 2026-10-30 ) : first LLM sessions
+
+Fresh kb ( `/tmp/kb_XXXXXXXX11-0.pl` ), plain user flow, parsers with `Match` ( #128 ) and queryengine with the python sink catalogs ( #129 ), both from source.
+Trace: `agent/.scan_traces/kb_XXXXXXXX11-0/20261030T113013Z-99484`.
+2 of 5 ran an LLM session ( the first on Weblate ), 3 short circuited on 0 sinks. All 5 `safe`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | POST `backups/<project>/` `trans/views/settings.py:711` | `redirect` `:716` | safe : no dataflow from the request | right : `redirect("backups", project=self.obj.slug)`, a named route. `@method_decorator(login_required)` |
+| 2 | UNKNOWN `billing/<pk>/` `billing/views.py:349` | `redirect` `:359` | safe : no dataflow | right : `redirect(billing)`, the model's url. `@login_required` |
+| 3 | POST `auth/tokens/webauthn/<pk>/` `accounts/views.py:2332` | 0 | safe ( no LLM ) | verdict right, kb wrong : `redirect_profile(...)` -> `HttpResponseRedirect` `:381`, not reached |
+| 4 | UNKNOWN `matrix/<path>/` `trans/views/source.py:73` | 0 | safe ( no LLM ) | right : ORM + `render` only. `@login_required` |
+| 5 | UNKNOWN `access/<project>/set/` `trans/views/acl.py:130` | 0 | safe ( no LLM ) | verdict right, kb wrong : `redirect_param(...)` -> `HttpResponseRedirect` `trans/util.py:259`, not reached |
+
+Agent : both verdicts are correct, and grounded in kb evidence ( `SelectDataFlowPath` null ). The stronger reason ( the target is a route name / a model ) isn't in its vocabulary.
+Each session spent 1 of its 5 queries re-running `SelectControlFlowReachableSinks`, which the loop had just run ( call 0 ).
+
+### the most important thing to improve
+
+**Python calls to 1st-party module functions have no call graph edge.** `acl.py` calls `weblate.trans.util.redirect_param` ( absolute import ), the kb has its `kb_func_def` in `weblate/trans/util.py`, but no `kb_call_1st_party_func_defined_in_file`, so `utils_control_flow_callable_calls_callable` never hops into it.
+On this kb : 2,061 call sites resolve to `weblate.<module>.<func>` with a matching `kb_func_def` in that module file, vs 144 linked calls in the whole kb. Every helper ( `parse_path`, `redirect_param`, `messages.*` ) is a dead end, so reachability is mostly intra-file.
+Quick win, queryengine : one more `utils_control_flow_callable_calls_callable` clause, a call resolved to `a.b.c.f` -> the `kb_func_def` of `f` in `a/b/c.py` ( or `a/b/c/__init__.py` ), the same 1st-party-by-module-file rule as `endpoints/python/django.pl`.
+
+## Weblate: random 5, source first, after `Match` ( #128, 2026-10-30 ) : 205 endpoints, 0 sinks
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-2.pl` ), plain user flow, parsers built from source with `Match` ( uncommitted, #128 ), codegen 1.0.42, kbgen 1.0.49, queryengine 1.0.75.
+`SelectHttpHandlers` : **205** handlers ( 29 Get, 28 Post, 148 Unknown ), was 156 : `accounts/views.py` +38, `trans/views/edit.py` +11.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-2/20261030T110628Z-74578`.
+All 5 settled by the 0-sink short circuit ( `zero_sinks_verdict` ), no LLM session ran.
+
+| # | endpoint | kb | source | auth ( source ) |
+|---|---|---|---|---|
+| 1 | GET `manage/integrations/` `vcs/views.py:468` | 0 sinks | ORM + `render` only | `@method_decorator(management_access)` |
+| 2 | UNKNOWN `auto-translate/<path>/` `trans/views/edit.py:1517` ( new, `Match` ) | 0 sinks | `redirect(obj)` ( model url ) x4, ORM | `@login_required`, `@require_POST` |
+| 3 | UNKNOWN `confirm/` `accounts/views.py:604` ( new ) | 0 sinks | `redirect("home")`, `redirect("social:complete", backend=session[...])` | `@login_not_required` ( really unauth ) |
+| 4 | GET `changes/browse/<path>/` `trans/views/changes.py:137` | 0 sinks | `redirect("changes", path=<GET params>)` ( named url, reversed ) | none ( public, ACL via `filter_access` ) |
+| 5 | UNKNOWN `costs/<path>/` `trans/views/reports.py:552` | 0 sinks | `redirect_param(...)`, ORM `Report.objects.create` | `@login_required`, `@require_POST` |
+
+The verdicts match the source : none of the 5 reaches a tracked sink, every redirect target is a model url or a named route.
+But the kb is right for the wrong reason : queryengine has no Django sinks at all ( Python = `requests.*` SSRF + tornado redirect ), so 4 of 5 endpoints have safe Django `redirect(...)` sinks the kb can't see, and every Weblate endpoint will short circuit to `safe` with no LLM.
+Auth : the seed puts all 205 handlers in `pre_auth` ( `auth_pattern_distribution: unauth 205` ). 4 of the 5 are wrong : only `confirm/` is unauth. There are no Python auth predicates ( `predicates/auth` has `nodejs/` only ).
+
+### the most important thing to improve
+
+**A Django sink catalog in queryengine, starting with `django.shortcuts.redirect` / `HttpResponseRedirect` ( open redirect ).** It is the only sink in 4 of the 5 endpoints, and with 0 Python sinks the agent never runs on Weblate.
+Then file reads / writes ( `open`, `FileResponse`, storage ) and raw SQL ( `cursor.execute`, `.raw`, `.extra` ).
+Next after it : Django auth predicates ( `login_required`, `method_decorator(...)`, `login_not_required`, `management_access` ), so the seed stops calling every endpoint unauth.
+
 ## Weblate: random 5, after #124 ( 2026-10-29, evening ) : still 0 endpoints
 
 Fresh kb through the plain user flow ( `/tmp/kb_XXXXXXXX1-0.pl`, 80MB vs 51MB before, 6 m 12 s ), parsers 1.1.44, same Weblate `0195e965e6`.
