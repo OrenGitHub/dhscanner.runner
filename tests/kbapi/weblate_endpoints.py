@@ -9,7 +9,8 @@ Stdlib only, so CI can pipe it into any container on the compose network::
 Weblate routes live in ``urls.py`` ( ``django.urls.path`` ), and the handlers
 are the verb methods of class-based views and the function views
 ( queryengine ``predicates/endpoints/python/django.pl``, runner #126 ).
-Before #126 the seed query returned 0 handlers on Weblate.
+Before #126 the seed query returned 0 handlers on Weblate, 156 after it,
+and 205 once the parser handles ``match`` statements ( #128 ).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import typing
 import urllib.request
 
 KBAPI_URL = "http://queryengine:3000/api"
-MIN_HANDLERS = 156
+MIN_HANDLERS = 205
 
 
 def handlers(kb_location: str) -> list[dict[str, typing.Any]]:
