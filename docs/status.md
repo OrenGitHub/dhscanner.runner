@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.48, codegen 1.0.44, kbgen 1.0.50 and queryengine 1.0.77.
+The images are parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50 and queryengine 1.0.77.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -91,7 +91,7 @@ Same nits : each session re-ran `SelectControlFlowReachableSinks` ( = call 0 ), 
 On Weblate ( non test, 1,011 `try` ) : 1,442 calls in `except`, 140 in `else`, 64 in `finally`, vs 1,378 in the `try` bodies, so more than half the calls under a `try` are missing. 31 of them are sinks ( `redirect` 23, `redirect_param` 5, `HttpResponseRedirect` 2, `open` 1 ), 2 in this five ( items 2 and 5 ).
 Quick win : parsers, keep the handler bodies + `orelse` + `finalbody` in the block ; codegen, generate `stmtCatchPart` too ( a sequence is enough for reachability ).
 
-Fix : codegen 1.0.44 generates the catch part after the try part ( all languages ). Parsers ( local, not pushed yet ) : `stmtTry` -> `Ast.StmtTry`, `try` body as the try part, `except` bodies ++ `else` ++ `finally` as the catch part ( `Actions.stmtTry` ), so Python needs both. Happy : 0 conflicts before and after ( only actions + rule names changed, same accepted language ).
+Fix : codegen 1.0.44 generates the catch part after the try part ( all languages ). Parsers 1.1.49 : `stmtTry` -> `Ast.StmtTry`, `try` body as the try part, `except` bodies ++ `else` ++ `finally` as the catch part ( `Actions.stmtTry` ), so Python needs both. Happy : 0 conflicts before and after ( only actions + rule names changed, same accepted language ).
 Fresh Weblate kb ( `/tmp/kb_XXXXXXXX1-51.pl` ) : `kb_called_from` 46,864 -> 48,168, 1st party file call edges 5,417 -> 5,689, 214 handlers. Of this five : `cleanup` now also reaches `redirect` `git.py:129`, `user/<user>/link/` reaches `redirect` `accounts/views.py:1131` ( was 0 sinks ), `ocr` gains `os.unlink` `:229` ( a `finally` ).
 
 ## Weblate: random 5, source first, after #131 ( 2026-10-31 ) : first `suspicious` verdicts, both wrong
