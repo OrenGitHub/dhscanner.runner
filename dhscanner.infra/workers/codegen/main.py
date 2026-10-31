@@ -15,14 +15,20 @@ from storage.models import DhscannerAstMetadata
 
 TO_CODEGEN_URL = 'http://codegen:3000/codegen'
 
+# each in flight file holds its whole dhscanner ast as a python dict ;
+# an unbounded gather loads every file of the job at once ( a full
+# Weblate scan pushed this worker past 4.9 GB and the docker vm to its cap )
+MAX_NUM_CONCURRENT_FILES = 8
+
 @dataclasses.dataclass(frozen=True)
 class Codegen(AbstractWorker):
 
     @typing.override
     async def run(self, job_id: str) -> None:
         dhscanner_asts = self.the_storage_guy.load_dhscanner_asts_metadata_from_db(job_id)
+        limit = asyncio.Semaphore(MAX_NUM_CONCURRENT_FILES)
         async with aiohttp.ClientSession() as s:
-            tasks = [self.codegen_single_dhscanner_ast(s, d) for d in dhscanner_asts]
+            tasks = [self.codegen_single_dhscanner_ast(s, d, limit) for d in dhscanner_asts]
             await asyncio.gather(*tasks)
 
     @typing.override
@@ -36,13 +42,15 @@ class Codegen(AbstractWorker):
     async def codegen_single_dhscanner_ast(
         self,
         session: aiohttp.ClientSession,
-        a: DhscannerAstMetadata
+        a: DhscannerAstMetadata,
+        limit: asyncio.Semaphore
     ) -> None:
 
-        if dhscanner_ast := await self.read_dhscanner_ast_file(a):
-            if content := await self.codegen(session, dhscanner_ast, a):
-                await self.the_storage_guy.save_callables(content, a)
-        await self.the_storage_guy.delete_dhscanner_ast(a)
+        async with limit:
+            if dhscanner_ast := await self.read_dhscanner_ast_file(a):
+                if content := await self.codegen(session, dhscanner_ast, a):
+                    await self.the_storage_guy.save_callables(content, a)
+            await self.the_storage_guy.delete_dhscanner_ast(a)
 
     async def codegen(
         self,

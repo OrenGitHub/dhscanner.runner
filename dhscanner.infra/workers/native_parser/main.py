@@ -1,4 +1,6 @@
+import ast
 import http
+import json
 import time
 import typing
 import asyncio
@@ -31,9 +33,39 @@ class NativeParser(AbstractWorker):
     @typing.override
     async def run(self, job_id: str) -> None:
         files = self.the_storage_guy.load_files_metadata_from_db(job_id)
+        python_fields = await self._python_fields(files)
         async with aiohttp.ClientSession() as session:
-            tasks = [self.run_single_file(session, f) for f in files]
+            tasks = [self.run_single_file(session, f, python_fields) for f in files]
             await asyncio.gather(*tasks)
+
+    async def _python_fields(self, files: list[FileMetadata]) -> dict[str, str]:
+        '''
+        The python front rewrites dotted 1st party accesses
+        ( `weblate.accounts.views.hosting` ) into `from` imports of the exact
+        file, so it needs the scanned `.py` files, and the top level class /
+        function names per file : a dotted access on a class
+        ( `StatsView.as_view()` ) goes through a local subclass, so it
+        resolves as a method of a class, and a function passed as an argument
+        ( `path("hosting/", views.hosting)` ) is called ( runner #131 ).
+        '''
+        python_files = [f for f in files if f.language == Language.PY]
+        classes: dict[str, list[str]] = {}
+        functions: dict[str, list[str]] = {}
+        for f in python_files:
+            if code := await self.the_storage_guy.load_file(f):
+                try:
+                    tree = ast.parse(code)
+                except (SyntaxError, ValueError):
+                    continue
+                classes[f.original_filename] = [n.name for n in tree.body if isinstance(n, ast.ClassDef)]
+                functions[f.original_filename] = [
+                    n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+        return {
+            'python_files': json.dumps([f.original_filename for f in python_files]),
+            'python_classes': json.dumps(classes),
+            'python_functions': json.dumps(functions)
+        }
 
     @typing.override
     async def mark_jobs_finished(self, job_ids: list[str]) -> None:
@@ -46,11 +78,12 @@ class NativeParser(AbstractWorker):
     async def run_single_file(
         self,
         session: aiohttp.ClientSession,
-        f: FileMetadata
+        f: FileMetadata,
+        python_fields: dict[str, str]
     ) -> None:
 
         if code := await self.read_source_file(f):
-            if content := await self.parse(session, code, f):
+            if content := await self.parse(session, code, f, python_fields):
                 await self.the_storage_guy.save_native_ast(content, f)
 
             # either way - delete the source file ...
@@ -60,7 +93,8 @@ class NativeParser(AbstractWorker):
         self,
         session: aiohttp.ClientSession,
         code: dict[str, typing.Tuple[str, bytes]],
-        f: FileMetadata
+        f: FileMetadata,
+        python_fields: dict[str, str]
     ) -> typing.Optional[str]:
         start = time.monotonic()
 
@@ -81,6 +115,9 @@ class NativeParser(AbstractWorker):
                 filename=code['source'][0],
                 content_type='application/octet-stream'
             )
+            if f.language == Language.PY:
+                for field in python_fields.items():
+                    form.add_field(*field)
             async with session.post(url, data=form) as response:
                 if response.status == http.HTTPStatus.OK:
                     # `errors='replace'` so a single non-utf-8 byte from a
