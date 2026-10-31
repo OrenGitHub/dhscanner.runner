@@ -1582,12 +1582,13 @@ jobs:
           fi
           echo "weblate_kb_path=$kb_path" >> "$GITHUB_ENV"
 
-      - name: assert >= 205 Django handlers on the Weblate KB
+      - name: assert >= 200 Django handlers on the Weblate KB
         run: |
           # SelectHttpHandlers is the agent's seed query. Before #126 it
           # returned 0 handlers on Weblate, 156 after it, 205 once the
-          # parser handles Match statements ( #128 ). Raise the floor as
-          # more patterns land ( include() prefixes, DRF ).
+          # parser handles Match statements ( #128 ), 214 once absolute
+          # 1st party imports resolve to the exact file ( #131 ). Raise
+          # the floor as more patterns land ( include() prefixes, DRF ).
           compose="docker compose \
             -f ./compose/compose.base.yaml \
             -f ./compose/compose.app.yaml \

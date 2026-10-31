@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-10-30
+Last updated: 2026-10-31
 
 ## the user flow under test
 
@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.45, codegen 1.0.42, kbgen 1.0.49 and queryengine 1.0.75.
+The images are parsers 1.1.48, codegen 1.0.43, kbgen 1.0.50 and queryengine 1.0.77.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -41,6 +41,46 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Weblate: random 5, source first, after `Invert` ( #128, 2026-10-30 ) : 213 endpoints
+
+Fresh kb ( `/tmp/kb_XXXXXXXX11-15.pl` ), plain user flow, parsers built from source with `Invert` ( `~x` -> `<dhscanner-instrumentation>[invert](x)`, uncommitted, #128 ), queryengine 1.0.76.
+`SelectHttpHandlers` : **213** handlers ( 29 Get, 28 Post, 156 Unknown ), was 205 : `trans/views/basic.py` now parses ( Weblate 610 -> 617 / 630 files, 0 regressions ).
+Trace: `agent/.scan_traces/kb_XXXXXXXX11-15/20261030T130335Z-01609`.
+1 of 5 ran an LLM session, 4 short circuited on 0 sinks. All 5 `safe`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | UNKNOWN `download-list/<name>/` `trans/views/files.py:147` | 0 | safe ( no LLM ) | right : `download_multi` -> `zip_download` ( `utils/views.py:829` ) zips files from the db ( component paths, `allowed_roots` ), `format` only picks an exporter. ACL : `filter_access` + `has_perm("translation.download")` |
+| 2 | UNKNOWN `watch/<path>/` `accounts/views.py:1643` | 0 | safe ( no LLM ) | verdict right, kb wrong : `redirect_next(request.GET.get("next"), ...)` `:1671` -> `HttpResponseRedirect(next_url)` `trans/util.py:364`, **tainted**, behind `url_has_allowed_host_and_scheme` + `startswith("/")` `:358-362`. `@login_required` `@require_POST` |
+| 3 | UNKNOWN `languages/` `lang/views.py:34` | 0 | safe ( no LLM ) | right : ORM + `render`. Public |
+| 4 | UNKNOWN `manage/discovery/register/` `wladmin/views.py:351` | `redirect` `:361` `:366` `:376` | safe : no dataflow from the request to any of the 3 | right : 2 x `redirect("manage")`, and `:376` = the weblate.org support url from settings + a `get_token` state. `@management_permission_required("management.configure")` |
+| 5 | UNKNOWN `js/screenshot/<pk>/add/` `screenshots/views.py:844` | 0 | safe ( no LLM ) | right : ORM ( `ain_bulk`, `filter` ) + `JsonResponse`, POST ids cast to `int`. `@login_required`, `has_perm("screenshot.edit")` |
+
+Agent ( item 4 ) : the verdict is right and every claim is backed by a reply ( 3 sinks, 3 null `SelectDataFlowPath` ).
+Same 2 nits as before : call 1 re-ran `SelectControlFlowReachableSinks` ( = call 0 ), and the reason cites the digest base rate ( "unauth endpoints are common ( unauth: 213 )" ) as context for an admin-only endpoint the seed calls `pre_auth`.
+
+### the most important thing to improve
+
+**Still the python 1st-party module-function call edge ( same as the previous effort ), and now it hides a tainted sink.**
+On item 2 the kb has `kb_call_resolved( <accounts/views.py:1671>, 'weblate.trans.util.redirect_next' )` and `kb_func_def( ..., 'redirect_next', 'weblate/trans/util.py', ... )`, but no `kb_call_1st_party_func_defined_in_file` between them ( 144 such facts in the whole kb ).
+So the one endpoint in this five with request data flowing into a redirect ( the textbook open redirect, sanitized here ) settles as `safe` with no LLM, for the wrong reason, and the agent never gets to judge the sanitizer.
+`redirect_next` is called from 13 sites with `request.GET.get("next")` ( `trans/views/edit.py`, `screenshots/views.py`, `legal/views.py`, `auth/views.py`, ... ). Quick win, queryengine : the `utils_control_flow_callable_calls_callable` clause from the previous effort.
+
+### done: absolute 1st party imports resolve to the exact file ( [#131](https://github.com/OrenGitHub/dhscanner.runner/issues/131) )
+
+Weblate imports its own modules with absolute paths ( ~3,900 `from weblate...` / `import weblate...` vs ~180 relative ), and those were all labeled 3rd party.
+The python front ( `py/rewrite.py`, an `ast.NodeTransformer` ) now rewrites them into `from` imports of the exact file, using the scanned `.py` files and the top level class / function names per file ( sent by the native parser worker ) :
+
+| source | rewritten | kb |
+|---|---|---|
+| `from weblate.trans.util import redirect_next` | ( parsers : level 0 `from` import of a scanned file is 1st party ) | `kb_call_1st_party_func_defined_in_file( <accounts/views.py:1671>, 'redirect_next', 'weblate/trans/util.py' )` |
+| `path("hosting/", weblate.accounts.views.hosting)` | `path("hosting/", dhscanner_instrumented_hosting())` | the same fact, for `hosting` in `accounts/views.py` |
+| `path("stats/", weblate.trans.views.about.StatsView.as_view())` | `class dhscanner_instrumented_StatsView_Subclass(dhscanner_instrumented_StatsView): pass` + `dhscanner_instrumented_StatsView_Subclass.as_view()` | `kb_call_method_of_class( Call, 'as_view', Sub )` + `kb_class_has_1st_party_super( Sub, 'StatsView', 'weblate/trans/views/about.py' )` -> `AboutView` -> django `TemplateView` |
+
+Plus codegen ( a dotted call on a class name is a method of that class ), kbgen ( a 1st party super gets its imported name, not the alias ) and `django.pl` ( reads the two shapes above ).
+On a fresh Weblate kb : 1st party file call edges 144 -> 3,085, `watch` reaches `redirect` / `HttpResponseRedirect` at `trans/util.py:363-364` ( was 0 sinks ), 214 handlers ( was 213 ; CI floor 200 ), 617 / 630 files parse ( 0 regressions ).
+Open : 7 class based handlers found before are not found now ( 57 -> 50 ), not located yet.
 
 ## Weblate: random 5, source first, after the python sinks ( #129, 2026-10-30 ) : first LLM sessions
 
