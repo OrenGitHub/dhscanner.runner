@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.48, codegen 1.0.43, kbgen 1.0.50 and queryengine 1.0.77.
+The images are parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50 and queryengine 1.0.77.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -41,6 +41,88 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Weblate: random 5, source first, after the `try` fix ( 2026-10-31 ) : 1 `suspicious`, wrong
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-51.pl` ), plain user flow, parsers + codegen from source ( same file calls + `try` fix ), kbgen 1.0.50, queryengine 1.0.77. 214 handlers.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-51/20261031T141625Z-95750`.
+3 of 5 ran an LLM session, 2 short circuited on 0 sinks. 4 `safe`, 1 `suspicious`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | UNKNOWN `healthz/` `trans/views/basic.py:1166` | 0 | safe ( no LLM ) | right : `HttpResponse("ok")`. `@login_not_required` |
+| 2 | UNKNOWN `remove-duplicate-units/<path>/` `trans/views/git.py:230` | `HttpResponseRedirect` `trans/util.py:259` | safe : no dataflow | right : `execute_locked` -> `redirect_param(obj, "#repository")`, internal url. `@login_required`, `has_perm("vcs.reset")` |
+| 3 | UNKNOWN `access/<project>/unblock/` `trans/views/acl.py:338` | `redirect` `:349` | **suspicious** : dataflow request -> redirect, no sanitizer, pre_auth | **wrong** : `redirect("manage-access", project=obj.slug)`, the target is a route name ( reversed, same host ). The dataflow ends in the `project=` kwarg, not the target. `@login_required` |
+| 4 | UNKNOWN `manage/alerts/` `wladmin/views.py:809` | 0 | safe ( no LLM ) | right : ORM + `render`. `@management_access` |
+| 5 | POST `fonts/<project>/group/<pk>/` `fonts/views.py:187` | `redirect` `:208` `:226` `:237` `:241` | safe : no dataflow ( checked `:208`, `:241` ) | right : 3 x `redirect(self.object)` ( a model ) + `redirect("fonts", ...)`. `:208`, `:226` and `:237` are in `try` / `else` bodies, found thanks to the `try` fix. `has_perm("project.edit")` |
+
+Agent : items 2, 4 ( no LLM ), 5 are sound ; item 5 checked dataflow for 2 of the 4 redirects only, harmless here.
+Item 3 : the claim "user input flowing to that redirect argument" is wrong, it flows to a keyword arg ; but the agent only sees the path's locations, so given the kb it couldn't tell.
+
+### the most important thing to improve
+
+**A Django `redirect` whose target ( arg 0 ) is a constant string can't be an open redirect, but the sink still reports it.** The kb already says so for item 3 : `kb_arg_i_for_call( <"manage-access">, 0, Call )` + `kb_const_string( <"manage-access">, 'manage-access' )`, and the tainted `obj.slug` is `kb_keyword_arg_for_call( 'project', ... )`.
+Weblate has 82 `redirect("<literal>", ...)` calls, most with `project=` / `path=` kwargs from a `parse_path` object, so each is one dataflow hit away from a `suspicious` like item 3.
+Quick win, queryengine `sinks/open_redirects/python/django.pl` : drop calls whose arg 0 is a `kb_const_string` ( a route name, or a fixed url : either way not attacker controlled ). Covers this FP class only ; `redirect(obj)` ( the earlier 2 FPs ) still needs the db lookup work.
+
+## Weblate: random 5, source first, after the same file call fix ( 2026-10-31 ) : 5 safe, `except` bodies missing
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-21.pl` ), plain user flow, prebuilt parsers 1.1.48, kbgen 1.0.50, queryengine 1.0.77, codegen from source ( same file call fix, below ). 214 handlers.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-21/20261031T134959Z-09593`.
+3 of 5 ran an LLM session, 2 short circuited on 0 sinks. All 5 `safe`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | UNKNOWN `labels/<project>/edit/<pk>/` `trans/views/labels.py:55` | `redirect` `:67` | safe : no dataflow from the request | right : `redirect("labels", project=project)`, a route name. `@login_required`, `has_perm("project.edit")` |
+| 2 | UNKNOWN `cleanup/<path>/` `trans/views/git.py:203` | `redirect` `:142`, `HttpResponseRedirect` `trans/util.py:259` ( via `queue_operation`, a same file call : new edge ) | safe : no dataflow | right : `redirect(f"{reverse('show_progress', ...)}?info=1")` and `redirect_param(obj, "#repository")`, internal urls. kb wrong : `redirect` `:129` and `redirect_param` `:132` are in the `except` body, missing. `@login_required` |
+| 3 | UNKNOWN `js/unit/<unit_id>/screenshots/` `screenshots/views.py:863` | 0 | safe ( no LLM ) | right : ORM + `JsonResponse` / `render`. `@login_required`, `has_perm("screenshot.edit")` |
+| 4 | UNKNOWN `js/screenshot/<pk>/ocr/` `screenshots/views.py:792` | `os.replace` `:223` + `os.path.dirname` `:217` + `os.path.basename` `:218` as `FileOperationWrite` | safe : no dataflow to any of the 3 | right : `get_tesseract` -> `download_tesseract_data` writes the tessdata file to a server side path. Nit ( queryengine ) : the `os.replace` write sink is reported at its path arg `full_name`, and the template lists every call taking that arg, so `dirname` / `basename` show up as file writes ( the agent spent 2 queries on them ) |
+| 5 | UNKNOWN `user/<user>/link/<link>/` `accounts/views.py:1116` | 0 | safe ( no LLM ) | verdict right, kb wrong : `redirect(page_profile.get_absolute_url())` `:1131` is in an `except ValidationError` body, missing. `@login_not_required` ( public ) |
+
+Agent : all 3 sessions are sound, every claim is backed by a reply ( sinks + null `SelectDataFlowPath` ).
+Same nits : each session re-ran `SelectControlFlowReachableSinks` ( = call 0 ), and reasons cite the `unauth: 214` base rate.
+
+### the most important thing to improve
+
+**`try` statements keep only the `try` body.** Two layers drop the rest :
+- parsers `PyParser.y` `stmt_try` lowers to `StmtBlock $5` ( the body ) : `except` handlers, `else` and `finally` are gone ( `exception_handler` returns `Nothing` ).
+- codegen `codeGenStmtTry = codeGenStmts . Ast.stmtTryPart` ( `CodeGen.hs:207` ) drops `stmtCatchPart` for every language ( Java and TS fill it ).
+
+On Weblate ( non test, 1,011 `try` ) : 1,442 calls in `except`, 140 in `else`, 64 in `finally`, vs 1,378 in the `try` bodies, so more than half the calls under a `try` are missing. 31 of them are sinks ( `redirect` 23, `redirect_param` 5, `HttpResponseRedirect` 2, `open` 1 ), 2 in this five ( items 2 and 5 ).
+Quick win : parsers, keep the handler bodies + `orelse` + `finalbody` in the block ; codegen, generate `stmtCatchPart` too ( a sequence is enough for reachability ).
+
+Fix : codegen 1.0.44 generates the catch part after the try part ( all languages ). Parsers 1.1.49 : `stmtTry` -> `Ast.StmtTry`, `try` body as the try part, `except` bodies ++ `else` ++ `finally` as the catch part ( `Actions.stmtTry` ), so Python needs both. Happy : 0 conflicts before and after ( only actions + rule names changed, same accepted language ).
+Fresh Weblate kb ( `/tmp/kb_XXXXXXXX1-51.pl` ) : `kb_called_from` 46,864 -> 48,168, 1st party file call edges 5,417 -> 5,689, 214 handlers. Of this five : `cleanup` now also reaches `redirect` `git.py:129`, `user/<user>/link/` reaches `redirect` `accounts/views.py:1131` ( was 0 sinks ), `ocr` gains `os.unlink` `:229` ( a `finally` ).
+
+## Weblate: random 5, source first, after #131 ( 2026-10-31 ) : first `suspicious` verdicts, both wrong
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-0.pl` ), plain user flow, prebuilt parsers 1.1.48, codegen 1.0.43, kbgen 1.0.50, queryengine 1.0.77. 214 handlers.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-0/20261031T131738Z-68265`.
+3 of 5 ran an LLM session ( 1st party call edges from #131 now reach sinks ), 2 short circuited on 0 sinks. 3 `safe`, 2 `suspicious`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | POST `auth/tokens/webauthn/<pk>/` `accounts/views.py:2332` | 0 | safe ( no LLM ) | verdict right, kb wrong : `redirect_profile("#account")` `:2354` -> `HttpResponseRedirect(reverse("profile") + anchor)` `:381`, constant. The call resolves to `'Unknown'` ( see below ) |
+| 2 | UNKNOWN `move/<path>/` `trans/views/settings.py:418` | `redirect` `:447`, `HttpResponseRedirect` `trans/util.py:259` | **suspicious** : dataflow request -> `redirect`, no sanitizer, pre_auth | **wrong** : `redirect(moved)` = `moved.get_absolute_url()`, a model ( `moved = form.save()` ) ; `redirect_param(obj, "#organize")` = `resolve_url(model) + constant`. `@login_required` + `has_perm("project.edit")` |
+| 3 | UNKNOWN `manage/memory/upload/` `auth/decorators.py:48` | 0 | safe ( no LLM ) | kb wrong : the handler is `management_permission_required("memory.manage")( UploadView.as_view() )` ( `urls.py:640` ), the kb picked the decorator factory, not `UploadView`, and still calls it `pre_auth` |
+| 4 | UNKNOWN `download/<path>/` `trans/views/files.py:163` | `redirect` `:200`, `open` + `FileResponse` `utils/views.py:910-912` | **suspicious** : open redirect + path traversal, request flows to both | **wrong** : `redirect(obj)` `:200` is a model ( `obj = parse_path(request, path, ...)` ) ; `open(filename)` reads `translation.filenames`, the component's files on disk, chosen by the db object, not by the request. `has_perm("translation.download", obj)` `:190` |
+| 5 | UNKNOWN `manage/tools/` `wladmin/views.py:279` | `redirect` `:301` `:307` | safe : no dataflow from the request | right : 2 x `redirect("manage-tools")`, a route name. `@management_access` |
+
+Agent : item 5 is sound. Items 2 and 4 reason "a dataflow path from the request object reaches the redirect, no sanitizer -> user controlled target".
+Every kb reply is quoted correctly, but the conclusion doesn't follow : the path is request -> `parse_path` / `form.save()` -> **a model** -> `redirect(model)`.
+The request picks *which* object, the url is the object's own `get_absolute_url()`, same host. Same for `open`. Both also lean on `pre_auth` ( kb has no Django auth, `move` is `@login_required` ).
+Same nit as before : each session re-ran `SelectControlFlowReachableSinks` ( = call 0 ).
+
+### the most important thing to improve
+
+**False positives : taint through a db lookup.** Now that 1st party calls are linked ( #131 ), `request -> parse_path(request, path) -> obj -> redirect(obj)` is a dataflow path, and the agent ( which only sees locations, not code ) reads it as "the user controls the url".
+Weblate has 70 `redirect(<name>)` calls ( vs 82 with a route name string ), most of them `redirect(obj)` after a `parse_path`, so on a full scan this pattern is the main source of `suspicious`.
+Layer : kb ( the agent's claim is backed by the reply ; it can't tell a model from a string ). Direction, not decided : stop python taint at a model returned by a lookup ( `parse_path`, `get_object_or_404`, `.objects.get`, `form.save()` ), or let `redirect` / `open` sinks say what their argument is ( a model / a route name / a string ). Not a quick win.
+
+Also found, kb, likely a quick win : **a call to a same file function placed after its `def` resolves to `'Unknown'`.** On this kb : 1,821 of 2,176 such call sites are `'Unknown'`, vs 2 of 206 when the call is placed before ( or inside ) the `def`.
+Example : `redirect_profile` ( `accounts/views.py:377` ) is `'Unknown'` at `:504`, `:1275` and `:2354`. In `auth/permissions.py`, `check_permission` ( `:292` ) resolves at `:274` and `:344` but not at its 21 later call sites. Cause ( codegen ) : `codeGenStmtFunc` binds the name as `ActualType.Function`, and `toFqn` has no case for it, so every later call got `Fqn.Unknown` ; a call above the `def` missed the symbol table and kept a bare name, with no edge either.
+Fix ( codegen 1.0.44 ) : a call on a `Function` emits `CallFuncFromImportedFile` with the def's file ( -> `kb_call_1st_party_func_defined_in_file`, like an imported 1st party function ), and top level `def`s are bound before any body ( hoisting ).
+Fresh Weblate kb ( `/tmp/kb_XXXXXXXX1-21.pl` ) : 1st party file call edges 3,239 -> 5,417, `'Unknown'` calls 4,707 -> 2,724, same file calls after the `def` 1,821 `'Unknown'` -> 1, 214 handlers ( unchanged ). webauthn ( item 1 ) now reaches `HttpResponseRedirect` `accounts/views.py:381`. Left : 10 calls to nested `def`s.
 
 ## Weblate: random 5, source first, after `Invert` ( #128, 2026-10-30 ) : 213 endpoints
 
