@@ -89,6 +89,30 @@ Steps 1 and 2 done in parsers `e18ba72` ( runner #138 ). `RbParser.y` is thin no
 **1,330 -> 3,133 / 5,033 files ( 26.4% -> 62.2% )**, 0 Happy conflicts. Biggest wins : `%i[]` ( +261 files progressed ), `case` / `when` ( +132 ), `class Foo < Bar[...]` ( +116 ), `if defined?` ( +114 ), `class ::Foo` ( +104 ).
 Lossy lowerings to revisit before the kb matters : keyword params are dropped, `command_call` keeps only the receiver, `listify` / `fstring` / `expify` callees and int placeholders should move to `instrumentationCall`.
 
+### progress ( 2026-11-02 ) : 91.2% of files parse, 0 Happy conflicts
+
+4 more batches of 20 ( parsers `459cb35` ) : **3,133 -> 4,588 / 5,033 files ( 62.2% -> 91.2% )**.
+
+| batch | accepted | files ok | biggest wins ( files progressed ) |
+|---|---|---|---|
+| 5 | 20 / 20 | 3,638 ( 72.3% ) | `params/int` 147, `aref/range` 126, `if/binary` 119, `opassign/begin` 109 |
+| 6 | 11 / 20 | 3,869 ( 76.9% ) | `def/rescue` 74, `def/while` 70, `class/def` 68 |
+| 7 | 15 / 20 | 4,336 ( 86.2% ) | `binary/assign` 129, `command/lambda` 78, `def/op` 76 |
+| 8 | 18 / 20 | 4,588 ( 91.2% ) | `block/yield` 94, `block/command` 55, `aref/range` 37 |
+
+**The gate can't see conflicts.** It checks each file's outcome ( ok / fail column ), not its AST. The 4 batches added 26 Happy conflicts ( 9 s/r + 19 r/r, vs 2 r/r in 1.1.50 ), and Happy's defaults changed reductions on files that already parsed :
+
+| construct | before ( batch 8 ) | after the fix |
+|---|---|---|
+| a statement `x = e` | `StmtExp e` : the new `expAssign` ( lowers to the rhs ) won over `stmtAssignPlain` | `StmtAssign` ( +22,110 over 2,723 files ) |
+| a statement `begin ... end` | int placeholder, body dropped ( the new `expBegin` won ) | `stmtBegin`, body kept |
+
+Fixed by deleting duplicate rules, not precedence : `stmtExp` wraps `expBase` ( `exp` minus `expIf` / `expAssign` / `expBegin`, so their stmt twins win ), `stmtLambda` dropped ( = `stmtExp . expLambda` ), keyword defaults are just `exp`, params `contents` is one rule over `kwOpts` / `rests`.
+Checks : 0 conflicts, coverage unchanged, 0 per-file regressions, every AST diff vs batch 8 restores a `StmtAssign` / `begin` body.
+`RbParser.y` declares `%expect 0` now ( like `TsParser.y` ), so a conflict fails the build and the loop rejects it.
+
+Next, to 95% ( 4,782 ) : more batches. Known gap : `def f(*r, k: 1)` ( syntax_tree emits `rest` before `keywords`, `contents` expects it after ).
+
 ## Weblate: random 5, source first, prebuilt parsers 1.1.49 + codegen 1.0.44 ( 2026-10-31 ) : 1 `suspicious`, wrong
 
 Fresh kb ( `/tmp/kb_XXXXXXXX1-78.pl` ), plain user flow, all prebuilt ( parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50, queryengine 1.0.77 ). 214 handlers.
