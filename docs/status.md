@@ -42,6 +42,78 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
 
+## Discourse: before the first five ( 2026-10-31 ) : Ruby parses 26% of files, 6% of lines
+
+Discourse `b81bee142d3` ( Rails, 7.8k non-spec `.rb` files, 158 controllers, `config/routes.rb` 2,095 lines ), parsers 1.1.49.
+No kb yet. This effort is about the layers under the agent, like the first Weblate one.
+
+| layer | what is missing | evidence |
+|---|---|---|
+| fronts | `frontrb` crash-loops after any restart : Rails finds a stale `tmp/pids/server.pid` and exits. It was never running in the stack | `docker logs compose-frontrb-1` : `A server is already running (pid: 1 ...)`. Fixed in fronts `a4a90ca` ( `rm -f` the pid file before `rails server` ) |
+| fronts | `FROM ruby` and `gem install rails` are unpinned : today that is Ruby 4.0.9, Rails 8.1.4, syntax_tree 6.3.0 | `fronts/rb/Dockerfile` |
+| parsers | **Ruby parses 1,330 / 5,034 files ( 26.4% ), 6.4% of lines.** 121 of 158 controllers fail | baseline script : frontrb -> parsers per file, spec / test / vendor / migrate excluded |
+| parsers | every Ruby failure answers `colStart = 1` : `RbLexer.x:894` `alexError'` wraps the location as `"Error[ ... ]"`, so `Main.hs:133` `readMaybe` falls back to `defaultLoc`. The real location is only in the parsers log. `PyLexer.x:993` uses a bare `show location` | fixed in parsers `e18ba72` ( + alex's own `lexical error at line L, column C` in `Main.postFailed` ) |
+| parsers | `RbLexer.x` / `RbParser.y` have no `case` / `when`, `while`, `rescue` / `ensure`, ternary | grep |
+| queryengine | no Rails handler recognizer : `endpoints/` has golang, java, nodejs, python only | |
+| queryengine | the only Ruby sink is `YAML.load_stream` ( `sinks/deser/ruby/native.pl` ) | |
+| cli | `--ignore_testing_code` drops `test` / `tests` dirs but not Ruby `spec/` ( 4,695 spec `.rb` files in Discourse ) | `cli/run.py:78-85` |
+
+The first construct each failing file trips on ( from the parsers log, one per file ) :
+
+| construct | files | example |
+|---|---|---|
+| method params : `*args`, keyword args `a:` / `a: 1` | 478 + 134 | `app/controllers/tag_param_limit.rb:6` |
+| safe navigation `&.` | 230 | `admin/config/customize_controller.rb:18` |
+| `%w[]` / `%i[]` word arrays | 152 + 64 + 60 + 52 + 44 | `admin/search_controller.rb:4` |
+| `:sym` symbol literals | 146 | `admin/problem_checks_controller.rb:5` |
+| keyword call args `f(a: 1)` | 90 | |
+| `super` / bare `super` | 65 + 68 | |
+| heredocs | 59 + 52 + 48 | |
+| lexical errors ( no filename in the log ) | 206 | |
+
+### the most important thing to improve
+
+**Ruby method parameters.** `*args` and keyword params ( `def f(a:, b: 1)` ) are the first failure in ~610 of 3,701 files. Then `&.` ( 230 ) and `%w[]` ( ~370 ).
+None of the later layers matter before this : a Rails recognizer can't find actions in files that aren't in the kb.
+
+Order of work :
+
+1. quick win : bare `show location` in `RbLexer.x`, so Ruby failures carry a real column.
+2. `rb_agent_loop.py` ( the sibling of `py_agent_loop.py`, same strict-progress gate ) over Discourse's production `.rb` files : params, `&.`, `%w`, symbols, kwargs, `super`.
+3. Rails recognizer : public methods of `ApplicationController` subclasses as handlers, verb / url from `routes.rb` later.
+4. Ruby sinks, then the first five.
+
+### progress ( 2026-11-01 ) : 62.2% of files parse
+
+Steps 1 and 2 done in parsers `e18ba72` ( runner #138 ). `RbParser.y` is thin now ( every action is one `RbParserActions.hs` call, golden-checked byte-identical ), and `rb_agent_loop.py` ran 4 batches of 20 iterations :
+**1,330 -> 3,133 / 5,033 files ( 26.4% -> 62.2% )**, 0 Happy conflicts. Biggest wins : `%i[]` ( +261 files progressed ), `case` / `when` ( +132 ), `class Foo < Bar[...]` ( +116 ), `if defined?` ( +114 ), `class ::Foo` ( +104 ).
+Lossy lowerings to revisit before the kb matters : keyword params are dropped, `command_call` keeps only the receiver, `listify` / `fstring` / `expify` callees and int placeholders should move to `instrumentationCall`.
+
+## Weblate: random 5, source first, prebuilt parsers 1.1.49 + codegen 1.0.44 ( 2026-10-31 ) : 1 `suspicious`, wrong
+
+Fresh kb ( `/tmp/kb_XXXXXXXX1-78.pl` ), plain user flow, all prebuilt ( parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50, queryengine 1.0.77 ). 214 handlers.
+Trace: `agent/.scan_traces/kb_XXXXXXXX1-78/20261031T170127Z-97500`.
+2 of 5 ran an LLM session, 3 short circuited on 0 sinks. 4 `safe`, 1 `suspicious`.
+
+| # | endpoint | kb sinks | agent | source |
+|---|---|---|---|---|
+| 1 | UNKNOWN `reports/<int:pk>/` `trans/views/reports.py:1074` | 0 | safe ( no LLM ) | right : `get_object_or_404` + `can_access` -> `render`. `@login_required` |
+| 2 | UNKNOWN `js/render-check/<unit_id>/<check_id>/` `checks/views.py:298` | 0 | safe ( no LLM ) | right : ORM + `check_access_component` -> `check_obj.render` ( a cached png or `Http404` ). No decorator, inline access check |
+| 3 | POST `auth/tokens/totp/<int:pk>/` `accounts/views.py:2367` | 0 | safe ( no LLM ) | verdict right, kb wrong : `super().post(...)` `:2370` -> `WebAuthnCredentialView.post` `:2332` -> `redirect_profile("#account")` -> `HttpResponseRedirect` `:381` ( constant ). The `super()` call resolves to `'Unknown.post'`. `@login_required` |
+| 4 | UNKNOWN `link-delete/<path>/` `trans/views/settings.py:493` | `HttpResponseRedirect` `trans/util.py:259` | **suspicious** : dataflow request -> redirect, no sanitizer, pre_auth | **wrong** : `redirect_param(obj, "#sharing")`, `obj = await aparse_path(request, path, ...)` is a model ( `resolve_url(model)` + constant ). `@login_required`, `has_perm("component.edit")` |
+| 5 | UNKNOWN `favicon.ico` `urls.py:80` ( `redirect_static` ) | `redirect` `:92` | safe : no dataflow | right : `redirect(f"{STATIC_URL}/{filename}")`, `filename` is a fixed route kwarg ( or a dict lookup on `size`, `192|512` ). Nit ( kb ) : the user input is the whole `def` ( `:80-92` ), not the `_request` param, so the null dataflow is weak evidence |
+
+Agent : items 3 ( no LLM ) and 5 are sound. Item 4 is the db lookup FP again ( the 3rd of the 4 `suspicious` so far ), every kb reply quoted right, the conclusion "user controlled target" doesn't follow.
+Same nits : each session re-ran `SelectControlFlowReachableSinks` ( = call 0 ), and reasons cite the `unauth: 214` base rate.
+
+### the most important thing to improve
+
+**`super().<method>(...)` never resolves.** On this kb all 842 `super()` call sites give `'Unknown.<method>'`, so nothing that the parent class method reaches is in the kb.
+Example : item 3, `TOTPDetailView.post` -> `super().post` ( `accounts/views.py:2370` ) is `kb_call_resolved( <2370:20-58>, 'Unknown.post' )`, though the kb has `kb_class_has_1st_party_super( TOTPDetailView, 'WebAuthnCredentialView', 'weblate/accounts/views.py' )`. The parent's `post` reaches `HttpResponseRedirect` `:381`.
+Weblate has 928 non test `super().<method>(` calls, 165 in views ( `get`, `post`, `form_valid`, `dispatch`, `get_queryset` ), the main way a Django class based view reuses its parent's code.
+Layer : kb ( codegen ). Likely a quick win, codegen not read yet : inside a method of a class with a 1st party super, lower `super().m(...)` to a `CallMethodOfClass` on that super ( the nearest override, like `django.pl` ). A 3rd party super ( `TemplateView` ) can stay `'Unknown'`.
+The db lookup FP ( item 4 ) is still the main source of wrong verdicts, but its direction is open ; the `redirect("<literal>", ...)` filter quick win is also still open.
+
 ## Weblate: random 5, source first, after the `try` fix ( 2026-10-31 ) : 1 `suspicious`, wrong
 
 Fresh kb ( `/tmp/kb_XXXXXXXX1-51.pl` ), plain user flow, parsers + codegen from source ( same file calls + `try` fix ), kbgen 1.0.50, queryengine 1.0.77. 214 handlers.
