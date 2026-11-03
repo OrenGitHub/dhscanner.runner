@@ -15,6 +15,16 @@ from storage.models import FileMetadata
 from logger.models import Context, LogMessage
 from workers.interface import AbstractWorker
 
+# The default aiohttp timeout ( 300s total ) also counts the wait for a
+# pooled connection, and run() posts every file of the job at once : on a big
+# repo ( Discourse, runner #138 ) queued requests timed out before they were
+# ever sent. So : no total budget, but a bound on a single front answering.
+FRONT_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+
+# each in flight file holds its source and its native ast in memory ; the
+# same bound as codegen ( an unbounded gather over 19k Discourse files )
+MAX_NUM_CONCURRENT_FILES = 8
+
 AST_BUILDER_URL = {
     Language.JS: 'http://frontjs:3000/to/esprima/js/ast',
     Language.TS: 'http://frontts:3000/to/native/ts/ast',
@@ -34,9 +44,20 @@ class NativeParser(AbstractWorker):
     async def run(self, job_id: str) -> None:
         files = self.the_storage_guy.load_files_metadata_from_db(job_id)
         python_fields = await self._python_fields(files)
-        async with aiohttp.ClientSession() as session:
-            tasks = [self.run_single_file(session, f, python_fields) for f in files]
+        limit = asyncio.Semaphore(MAX_NUM_CONCURRENT_FILES)
+        async with aiohttp.ClientSession(timeout=FRONT_TIMEOUT) as session:
+            tasks = [self.run_single_file_bounded(session, f, python_fields, limit) for f in files]
             await asyncio.gather(*tasks)
+
+    async def run_single_file_bounded(
+        self,
+        session: aiohttp.ClientSession,
+        f: FileMetadata,
+        python_fields: dict[str, str],
+        limit: asyncio.Semaphore
+    ) -> None:
+        async with limit:
+            await self.run_single_file(session, f, python_fields)
 
     async def _python_fields(self, files: list[FileMetadata]) -> dict[str, str]:
         '''
@@ -153,7 +174,10 @@ class NativeParser(AbstractWorker):
         # 'replace')` above shouldn't raise it -- if a future aiohttp change
         # or a different read path re-introduces the issue, we still log the
         # file as NATIVE_PARSING_FAILED instead of toppling the worker.
-        except (aiohttp.ClientError, UnicodeDecodeError):
+        # `TimeoutError` ( a slow front ) is not an `aiohttp.ClientError` :
+        # uncaught, it ended the asyncio.gather and the worker with it, and
+        # the job hung at WaitingForNativeParsing.
+        except (aiohttp.ClientError, UnicodeDecodeError, TimeoutError):
             pass
 
         end = time.monotonic()

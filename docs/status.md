@@ -113,6 +113,35 @@ Checks : 0 conflicts, coverage unchanged, 0 per-file regressions, every AST diff
 
 Next, to 95% ( 4,782 ) : more batches. Known gap : `def f(*r, k: 1)` ( syntax_tree emits `rest` before `keywords`, `contents` expects it after ).
 
+### progress ( 2026-11-03 ) : 95.4% of files parse, first scans, 1,232 Rails endpoints
+
+2 more batches ( parsers `ea64013` ) : **4,588 -> 4,803 / 5,033 files ( 91.2% -> 95.4% )**, the #138 goal. 0 Happy conflicts : `%expect 0` failed the build for 2 loop edits ( 1 r/r, 2 s/r on `event_listener.rb` ), the loop rejected both.
+
+| batch | accepted | files ok | wins |
+|---|---|---|---|
+| 9 | 11 / 14 | 4,709 ( 93.6% ) | assoc with call keys, `yield` args, block var params, op-assigns as values |
+| 10 | 11 / 13 | 4,803 ( 95.4% ) | `def f(&)`, forwarded rest params, string parts, `<=>` |
+
+**First Discourse scans** ( `cli run --create_knowledge_base_from ../discourse`, plain user flow, parsers + queryengine from source ). Each one stopped on a different bug :
+
+| scan | what stopped it | fix |
+|---|---|---|
+| 1 ( 19,269 files ) | `native_parser` died : the default aiohttp timeout ( 300 s total ) counts the wait for a pooled connection, `run` posts every file at once, so queued requests timed out, and `TimeoutError` is not an `aiohttp.ClientError` : the gather and the worker died, the job hung at `WaitingForNativeParsing` | `ClientTimeout(total=None, sock_connect=30, sock_read=300)`, catch `TimeoutError` |
+| 1 | the cli polls 200 x 5 s ( 17 min ) and exits 0 mid scan | 6 h, an error log when it gives up |
+| 1 | `dhscanner_parser` killed ( 137 ) : an unbounded gather over every native ast of the job | a semaphore of 8 in `native_parser` and `dhscanner_parser`, like codegen |
+| 2 | one dropped upload ( `ServerDisconnectedError`, uvicorn restarted a busy worker ) crashed the cli | retry a file 3 times |
+| - | 62% of the files were not code : rspec `spec/` ( 4,728, `--ignore_testing_code` only dropped `test/` / `tests/` ) and `config/locales/*.yml` ( 4,236 ) | both filtered : 19,269 -> 10,302 files |
+
+**Rails endpoints** ( queryengine `d8c18a4`, `predicates/endpoints/ruby/rails.pl` ) : a handler is a method of a `*Controller` class defined under a `controllers/` dir, the zeitwerk convention. Ruby supers are never imported, so the KB has no resolved supers for them. A `def` after a bare `private` / `protected` is not an action : the parser tags it `<dhscanner-instrumentation>[private]` ( the method stays in the KB ). Resourceful actions get their verb, the rest are `Unknown`, the url is `{?}`.
+`SelectHttpHandlers` on Discourse : **0 -> 1,232 handlers** ( 262 Get, 112 Post, 78 Patch, 87 Delete, 693 Unknown ), 310 / 333 controllers, 9 s ( `tests/kbapi/discourse_endpoints.py`, floor 1,200 ). Without the `private` tags : 2,031. The source has ~1,400 public actions, the rest sit in controllers that do not parse yet ( `posts_controller.rb`, `users_controller.rb` ).
+
+Open :
+- routes : verb / url from `config/routes.rb`, then the 693 `Unknown`
+- the workers have no `restart:` policy, a dead worker hangs its job
+- the KB lives in the queryengine container's `/tmp` : recreating the container ( eg a new image ) drops it
+- the queryengine answers `FoundHttpHandlers []` for a KB path that does not exist, not an error
+- `.gjs` ( 3,293 Ember files ) is not a scanned suffix
+
 ## Weblate: random 5, source first, prebuilt parsers 1.1.49 + codegen 1.0.44 ( 2026-10-31 ) : 1 `suspicious`, wrong
 
 Fresh kb ( `/tmp/kb_XXXXXXXX1-78.pl` ), plain user flow, all prebuilt ( parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50, queryengine 1.0.77 ). 214 handlers.

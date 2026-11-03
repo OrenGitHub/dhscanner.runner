@@ -44,7 +44,11 @@ IGNORED_3RD_PARTY_DIRS: typing.Final[set[str]] = {
 
 MAX_ATTEMPTS_CONNECTING_TO_SERVER = 10
 UPLOAD_BATCH_SIZE = 100
-MAX_NUM_CHECKS = 200
+MAX_ATTEMPTS_UPLOADING_FILE = 3
+# 200 checks ( ~17 minutes ) ran out while Discourse ( 19k files, runner
+# #138 ) was still native parsing, and the cli exited 0 mid scan. Six hours
+# covers the biggest repos scanned so far.
+MAX_NUM_CHECKS = 6 * 60 * 60 // 5
 NUM_SECONDS_BETEEN_STEP_CHECK = 5
 
 HTTPS_PORT: typing.Final[int] = 443
@@ -82,6 +86,14 @@ def relevant(filename: pathlib.Path) -> bool:
         return False
 
     if '.test.' in name:
+        return False
+
+    # rails / rspec tests : Discourse has 4.7k of them under spec/ ( #138 )
+    if 'spec' in parts or name.endswith('_spec.rb'):
+        return False
+
+    # rails i18n strings ( 4.2k Discourse yml files ) : no code, no flows
+    if 'locales' in parts and 'config' in parts:
         return False
 
     if name.endswith('.d.ts'):
@@ -382,12 +394,20 @@ async def actual_upload(
     f: pathlib.Path,
 ) -> bool:
 
-    try:
-        async with aiofiles.open(scan_dirname / f, 'rb') as content:
-            async with session.post(url, params=params, headers=headers, data=content) as response:
-                return await check_response(response, f.name)
-    except FileNotFoundError:
-        return False
+    # uvicorn restarts a busy app worker now and then ( `Child process
+    # died` ) : its in flight uploads end with ServerDisconnectedError, which
+    # took the whole Discourse upload down ( #138 ). Retry the file instead.
+    for attempt in range(MAX_ATTEMPTS_UPLOADING_FILE):
+        try:
+            async with aiofiles.open(scan_dirname / f, 'rb') as content:
+                async with session.post(url, params=params, headers=headers, data=content) as response:
+                    return await check_response(response, f.name)
+        except FileNotFoundError:
+            return False
+        except aiohttp.ClientError as e:
+            logging.warning('[ step 3 ] upload of %s failed ( %s ), attempt %s', f.name, e, attempt + 1)
+            await asyncio.sleep(1)
+    return False
 
 async def upload_single_file(
     session: aiohttp.ClientSession,
@@ -823,6 +843,12 @@ def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> No
                             else:
                                 logging.info('[ step 6 ] received sarif:\n%s', results)
                             break
+                    else:
+                        logging.error(
+                            '[ step 4 ] gave up after %s status checks, job %s is still running',
+                            MAX_NUM_CHECKS,
+                            job_id
+                        )
 
 
 @main.register
