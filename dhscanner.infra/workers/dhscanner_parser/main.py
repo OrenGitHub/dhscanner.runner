@@ -21,6 +21,12 @@ from common.language import Language
 from workers.interface import AbstractWorker
 from storage.models import FileMetadata, NativeAstMetadata
 
+# an unbounded gather reads every native ast of the job at once : a full
+# Discourse scan ( 19k files, runner #138 ) got the worker killed ( 137 ) ;
+# the same bound as codegen. With it, no request waits long for a pooled
+# connection, and a timeout ( one slow file ) is logged, not fatal.
+MAX_NUM_CONCURRENT_FILES = 8
+
 DHSCANNER_AST_BUILDER_URL = {
     Language.JS: 'http://parsers:3000/from/js/to/dhscanner/ast',
     Language.TS: 'http://parsers:3000/from/ts/to/dhscanner/ast',
@@ -86,9 +92,25 @@ class DhscannerParser(AbstractWorker):
         asts = self.the_storage_guy.load_native_asts_metadata_from_db(job_id)
         all_files = self.the_storage_guy.load_files_metadata_from_db(job_id)
         directories, filenames = self._collect_directories_and_filenames(all_files)
+        limit = asyncio.Semaphore(MAX_NUM_CONCURRENT_FILES)
         async with aiohttp.ClientSession() as session:
-            tasks = [self.run_single_ast(session, f, directories, filenames, f.github_url) for f in asts]
+            tasks = [
+                self.run_single_ast_bounded(session, f, directories, filenames, limit)
+                for f in asts
+            ]
             await asyncio.gather(*tasks)
+
+    # pylint: disable=too-many-arguments, too-many-positional-arguments
+    async def run_single_ast_bounded(
+        self,
+        session: aiohttp.ClientSession,
+        a: NativeAstMetadata,
+        directories: list[str],
+        filenames: list[str],
+        limit: asyncio.Semaphore
+    ) -> None:
+        async with limit:
+            await self.run_single_ast(session, a, directories, filenames, a.github_url)
 
     @typing.override
     async def mark_jobs_finished(self, job_ids: list[str]) -> None:
@@ -190,6 +212,9 @@ class DhscannerParser(AbstractWorker):
 
         except aiohttp.ClientError as e:
             emessage = f'aiohttp.ClientError: {e}'
+
+        except TimeoutError as e:
+            emessage = f'TimeoutError: {e}'
 
         except json.JSONDecodeError as e:
             emessage = f'json.JSONDecodeError: {e}'
