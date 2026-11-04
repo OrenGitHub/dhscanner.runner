@@ -557,11 +557,10 @@ def analyze_url(APPROVED_URL: str, parsed_args: CliArgparse) -> str:
     port = HTTPS_PORT if parsed_args.use_external_vps is not None else PORT
     return f'{host}:{port}/api/{APPROVED_URL}/analyze'
 
-# `analyze` is run-mode-only: it reads parsed_args.with_agent. Typing
-# against CliRunArgparse keeps that access mypy-safe and stops it from
-# being accidentally called from main_manage in the future.
+# `analyze` is run-mode-only. Typing against CliRunArgparse stops it
+# from being accidentally called from main_manage in the future.
 def analyze(job_id: str, APPROVED_URL: str, APPROVED_BEARER_TOKEN: str, parsed_args: CliRunArgparse, directories: list[str], filenames: list[str]) -> bool:
-    params = {'job_id': job_id, 'agent_mode': str(parsed_args.with_agent).lower()}
+    params = {'job_id': job_id}
     url = analyze_url(APPROVED_URL, parsed_args)
     headers = analyze_headers(APPROVED_BEARER_TOKEN)
     body = { 'directories': directories, 'filenames': filenames }
@@ -763,20 +762,6 @@ def upload_files_succeeded(
     logging.warning('[ step 3 ] uploaded failed, aborting')
     return False
 
-# pylint: disable=too-many-nested-blocks
-def remove_loops(sarif: dict) -> dict:
-    for sarif_run in sarif.get('runs', []):
-        for result in sarif_run.get('results', []):
-            for codeFlow in result.get('codeFlows', []):
-                for threadFlow in codeFlow.get('threadFlows', []):
-                    locations = threadFlow.get('locations', [])
-                    normalized: list = []
-                    for loc in locations:
-                        if not normalized or json.dumps(loc) != json.dumps(normalized[-1]):
-                            normalized.append(loc)
-                    threadFlow['locations'] = normalized
-    return sarif
-
 # Dispatcher base. Picks the concrete impl based on the runtime type
 # of parsed_args (registrations below). Because CliArgparse.parse()
 # can only return a CliRunArgparse or a CliManageArgparse — and both
@@ -790,15 +775,15 @@ def main(parsed_args: CliArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> None
     raise NotImplementedError(f'no main impl for {type(parsed_args).__name__}')
 
 
+# pylint: disable=too-many-nested-blocks
 @main.register
 def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> None:
 
-    # Scan-mode entry point. Allocates a job id, collects + uploads
-    # files, kicks off analysis, polls for completion, then either
-    # surfaces the kb path (agent mode) or writes/prints sarif. Typed
-    # against CliRunArgparse so parsed_args.scan_dirname is statically
-    # known to be set (not Optional) and parsed_args.with_agent /
-    # .save_sarif_to are reachable without isinstance narrowing.
+    # Kb-creation entry point. Allocates a job id, collects + uploads
+    # files, kicks off analysis, polls for completion, then surfaces the
+    # kb path for `python -m agent.loop --use_kb`. Typed against
+    # CliRunArgparse so parsed_args.scan_dirname is statically known to
+    # be set (not Optional).
     if job_id := try_connecting_to_server_and_allocate_a_job_id(APPROVED_URL, BEARER_TOKEN, parsed_args):
         if files := collect_relevant_files(parsed_args.scan_dirname):
             directories, filenames = collect_directories_and_filenames(files)
@@ -825,23 +810,13 @@ def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> No
                             time.sleep(NUM_SECONDS_BETEEN_STEP_CHECK)
                         else:
                             logging.info('[ step 5 ] finished 🙂')
-                            if parsed_args.with_agent:
-                                results = get_results(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
-                                kb_location = results.get('kb_location')
-                                if isinstance(kb_location, str):
-                                    logging.info('[ step 6 ] kb filename: %s', kb_location)
-                                    logging.info('[ step 6 ] copy this filename for agent mode continuation')
-                                else:
-                                    logging.warning('[ step 6 ] missing kb filename in results: %s', results)
-                                break
-
                             results = get_results(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
-                            if output := parsed_args.save_sarif_to:
-                                logging.info('[ step 6 ] saved sarif to: %s', output)
-                                with open(output, 'w', encoding='utf-8') as fl:
-                                    json.dump(results, fl)
+                            kb_location = results.get('kb_location')
+                            if isinstance(kb_location, str):
+                                logging.info('[ step 6 ] kb filename: %s', kb_location)
+                                logging.info('[ step 6 ] copy this filename for agent mode continuation')
                             else:
-                                logging.info('[ step 6 ] received sarif:\n%s', results)
+                                logging.warning('[ step 6 ] missing kb filename in results: %s', results)
                             break
                     else:
                         logging.error(

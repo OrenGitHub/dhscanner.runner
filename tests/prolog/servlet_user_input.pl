@@ -1,7 +1,7 @@
 % Lists every `endpoints_user_input/1` of a KB as `USER_INPUT: <file>:<line>`
 % and every intra procedural flow from one into an open redirect sink as
 % `OPEN_REDIRECT: <file>:<line> -> <line>`. Run from the queryengine
-% working directory ( it consults `api.pl` ) :
+% working directory ( it consults `predicates/api.pl` ) :
 %
 %     swipl servlet_user_input.pl -- <kb_path>
 
@@ -16,7 +16,7 @@ main :-
     current_prolog_flag(argv, [KB | _]),
     consult(KB),
     working_directory(Dir, Dir),
-    atom_concat(Dir, 'api.pl', Api),
+    atom_concat(Dir, 'predicates/api.pl', Api),
     consult(Api),
     forall(distinct(UI, endpoints_user_input(UI)),
            ( site(UI, File, Line), format("USER_INPUT: ~w:~w~n", [File, Line]) )),

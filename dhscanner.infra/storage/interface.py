@@ -11,7 +11,6 @@ from storage.models import (
     FileMetadata,
     FactsMetadata,
     NativeAstMetadata,
-    ResultsMetadata,
 )
 
 # pylint: disable=too-many-public-methods
@@ -90,30 +89,6 @@ class Storage(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def save_results(self, content: str, job_id: str) -> None:
-        ...
-
-    @abc.abstractmethod
-    async def load_results(self, r: ResultsMetadata) -> str:
-        ...
-
-    @abc.abstractmethod
-    async def delete_results(self, r: ResultsMetadata) -> None:
-        ...
-
-    @abc.abstractmethod
-    async def save_output(self, content: dict, job_id: str) -> None:
-        ...
-
-    @abc.abstractmethod
-    async def load_output(self, job_id: str) -> dict:
-        ...
-
-    @abc.abstractmethod
-    async def delete_output(self, job_id: str) -> None:
-        ...
-
-    @abc.abstractmethod
     async def clear_job_state(self, job_id: str) -> None:
         ...
 
@@ -160,11 +135,3 @@ class Storage(abc.ABC):
             stmt = sqlalchemy.select(FactsMetadata).where(condition_is_satisfied)
             result = session.execute(stmt).scalars().all()
             return typing.cast(list[FactsMetadata], result)
-
-    @staticmethod
-    def load_results_metadata_from_db(job_id: str) -> ResultsMetadata:
-        with db.SessionLocal() as session:
-            condition_is_satisfied = ResultsMetadata.job_id == job_id
-            stmt = sqlalchemy.select(ResultsMetadata).where(condition_is_satisfied)
-            result = session.execute(stmt).scalars().first()
-            return typing.cast(ResultsMetadata, result)

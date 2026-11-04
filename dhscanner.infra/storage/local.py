@@ -31,7 +31,6 @@ _JOB_SCOPED_TABLES: typing.Final[tuple] = (
     models.DhscannerAstMetadata,
     models.CallablesMetadata,
     models.FactsMetadata,
-    models.ResultsMetadata,
 )
 
 BASEDIR: typing.Final[pathlib.Path] = pathlib.Path(
@@ -538,79 +537,6 @@ class LocalStorage(interface.Storage):
         )
 
     @typing.override
-    async def save_results(self, content: str, job_id: str) -> None:
-        results = LocalStorage.jobdir(job_id) / 'results.txt'
-        async with aiofiles.open(results, 'wt') as fl:
-            await fl.write(content)
-
-        results_as_str = str(results)
-        LocalStorage.store_results_metadata_in_db(
-            models.ResultsMetadata(
-                results=results_as_str,
-                job_id=job_id
-            )
-        )
-
-    @typing.override
-    async def load_results(self, r: models.ResultsMetadata) -> str:
-        async with aiofiles.open(r.results, 'rt') as fl:
-            return await fl.read()
-
-    @typing.override
-    async def delete_results(self, r: models.ResultsMetadata) -> None:
-        try:
-            start = time.monotonic()
-            await asyncio.to_thread(os.remove, r.results)
-            end = time.monotonic()
-            delta = end - start
-            await self.logger.info(
-                LogMessage(
-                    file_unique_id=r.results,
-                    job_id=r.job_id,
-                    context=Context.DELETE_RESULTS_SUCCEEDED,
-                    original_filename='*',
-                    language=Language.ALL,
-                    duration=timedelta(seconds=delta)
-                )
-            )
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            pass
-
-        end = time.monotonic()
-        delta = end - start
-        await self.logger.warning(
-            LogMessage(
-                file_unique_id=r.results,
-                job_id=r.job_id,
-                context=Context.DELETE_RESULTS_FAILED,
-                original_filename='*',
-                language=Language.ALL,
-                duration=timedelta(seconds=delta)
-            )
-        )
-
-    @typing.override
-    async def save_output(self, content: dict, job_id: str) -> None:
-        filename = LocalStorage.jobdir(job_id) / 'output.json'
-        async with aiofiles.open(filename, 'wt') as fl:
-            str_content = json.dumps(content)
-            await fl.write(str_content)
-
-    @typing.override
-    async def load_output(self, job_id: str) -> dict:
-        filename = LocalStorage.jobdir(job_id) / 'output.json'
-        async with aiofiles.open(filename, 'rt') as fl:
-            content = await fl.read()
-            return json.loads(content)
-
-    @typing.override
-    async def delete_output(self, job_id: str) -> None:
-        filename = LocalStorage.jobdir(job_id) / 'output.json'
-        await asyncio.to_thread(os.remove, filename)
-
-    @typing.override
     async def clear_job_state(self, job_id: str) -> None:
         # Operator-only path: nuke every artifact of one job in the two
         # backing stores the LocalStorage owns -- the SQLite metadata
@@ -701,10 +627,4 @@ class LocalStorage(interface.Storage):
     def store_kbgen_facts_metadata_in_db(c: models.FactsMetadata) -> None:
         with db.SessionLocal() as session:
             session.add(c)
-            session.commit()
-
-    @staticmethod
-    def store_results_metadata_in_db(r: models.ResultsMetadata) -> None:
-        with db.SessionLocal() as session:
-            session.add(r)
             session.commit()

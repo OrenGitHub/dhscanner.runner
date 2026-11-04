@@ -70,19 +70,6 @@ services:
     networks:
       - dhscanner
 
-  results_worker:
-    build:
-      context: ../dhscanner.infra
-      dockerfile: workers/Dockerfile
-      args:
-        WORKER: results
-    volumes:
-      *shared-transient-storage
-    environment:
-      <<: *shared-transient-storage-path
-    networks:
-      - dhscanner
-
 volumes:
   transient_storage:
 

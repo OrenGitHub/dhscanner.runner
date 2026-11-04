@@ -101,6 +101,28 @@ downstream CI or leave the diff impossible to review cleanly.
   their own repo) will fail at `cabal update` because the new version
   isn't on Hackage yet.
 
+- **`dhscanner.predicates`** — the Prolog catalogs ( sinks, sanitizers,
+  endpoints, auth, dataflow, callgraph ), consumed by queryengine as the
+  `predicates/` submodule. This is the one repo that **accepts outside
+  PRs**: it has no secrets, its CI ( `tests/check.pl`: load gate + one
+  fixture per catalog file ) runs with a read-only token, and it publishes
+  nothing. Releases are semver git tags + `CHANGELOG.md` ( see its
+  `CONTRIBUTING.md#versioning` ; a predicate in `tests/host.pl`
+  `host_calls/1` changing name / arity, or a newer kbgen, is a major ).
+  Release flow:
+  1. Merge the PR(s) in `dhscanner.predicates`, add the `CHANGELOG.md`
+     entry, tag `vX.Y.Z`, push the tag.
+  2. In queryengine: `git -C predicates checkout vX.Y.Z`, commit the
+     pointer bump, push to `main` ( queryengine CI publishes the image as
+     usual ).
+  3. Bump the queryengine image in `dhscanner.core` / runner
+     `compose/compose.prebuilt.yaml`.
+  Only the maintainer moves the submodule pointer, so contributor code
+  reaches the Dockerhub-privileged queryengine only through a reviewed,
+  tagged release. Maintainer changes to the catalogs go through this repo
+  too ( push to `main` is fine for the maintainer ), never by editing
+  queryengine's `predicates/` in place.
+
 - **`dhscanner.core`** — umbrella repo of service submodules. Also
   **push straight to `main`**. It only ever carries submodule-pointer
   bumps and has no CI publication step.
