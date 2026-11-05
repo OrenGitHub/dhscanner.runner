@@ -3,10 +3,9 @@ from coordinator.interface import (
     Coordinator
 )
 
-async def run(coordinator: Coordinator, job_id: str, agent_mode: bool) -> dict:
+async def run(coordinator: Coordinator, job_id: str) -> dict:
     status = Status.WaitingForNativeParsing
     coordinator.set_status(job_id, status)
-    coordinator.set_agent_mode(job_id, agent_mode)
     return analysis_started(job_id)
 
 def analysis_started(job_id: str) -> dict:

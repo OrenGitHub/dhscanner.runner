@@ -14,7 +14,6 @@ class Status(str, enum.Enum):
     WaitingForCodegen = 'WaitingForCodegen'
     WaitingForKbgen = 'WaitingForKbgen'
     WaitingForQueryengine = 'WaitingForQueryengine'
-    WaitingForResultsGeneration = 'WaitingForResultsGeneration'
     Finished = 'Finished'
 
     @staticmethod
@@ -35,14 +34,6 @@ class Coordinator(abc.ABC):
 
     @abc.abstractmethod
     def set_status(self, job_id: str, status: Status) -> None:
-        ...
-
-    @abc.abstractmethod
-    def get_agent_mode(self, job_id: str) -> bool:
-        ...
-
-    @abc.abstractmethod
-    def set_agent_mode(self, job_id: str, agent_mode: bool) -> None:
         ...
 
     @abc.abstractmethod

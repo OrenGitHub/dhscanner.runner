@@ -46,12 +46,6 @@ Endpoints are seeded in lexicographic order, so runs are comparable. Add
 each `--max-items 5` run faces 5 new endpoints ( the order is in the
 trace's `queue_seeded` event ).
 
-## scan with the built-in queries ( soon deprecated )
-
-```bash
-$ python -m cli run --scan_dirname repo/to/scan --ignore_testing_code true --save_sarif_to out.json
-```
-
 ## manage jobs
 
 ```bash

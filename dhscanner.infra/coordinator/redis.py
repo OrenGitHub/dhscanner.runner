@@ -57,18 +57,6 @@ class RedisCoordinator(interface.Coordinator):
         self.redis_client.set(job_id, status_bytes)
 
     @typing.override
-    def get_agent_mode(self, job_id: str) -> bool:
-        key = self.get_agent_mode_key(job_id)
-        if raw_bytes := self._client_get_bytes(key):
-            return raw_bytes.decode('utf-8') == 'True'
-        return False
-
-    @typing.override
-    def set_agent_mode(self, job_id: str, agent_mode: bool) -> None:
-        key = self.get_agent_mode_key(job_id)
-        self.redis_client.set(key, str(agent_mode))
-
-    @typing.override
     async def get_jobs_waiting_for(self, desired_status: interface.Status) -> list[str]:
 
         try:
@@ -97,15 +85,14 @@ class RedisCoordinator(interface.Coordinator):
 
     @typing.override
     async def clear_job(self, job_id: str) -> None:
-        # Wipe every Redis trace of one job: the status key, plus the two
-        # sidecar keys (agent_mode / kb_location) created lazily during
-        # the analyze flow. DEL is idempotent and missing-key tolerant,
-        # so this is safe to call repeatedly even when sidecars never
-        # came into existence (e.g. a job that died before /analyze).
+        # Wipe every Redis trace of one job: the status key, plus the
+        # kb_location sidecar key set once the kb is uploaded. DEL is
+        # idempotent and missing-key tolerant, so this is safe to call
+        # repeatedly even when the sidecar never came into existence
+        # (e.g. a job that died before its kb was uploaded).
         try:
             self.redis_client.delete(
                 job_id,
-                self.get_agent_mode_key(job_id),
                 f'{job_id}:kb_location',
             )
         except redis.exceptions.RedisError:
@@ -151,8 +138,8 @@ class RedisCoordinator(interface.Coordinator):
     async def list_all_job_ids(self) -> list[str]:
         # Redis is the source of truth for "a job exists": every job-id is
         # set as a top-level key whose value is the status JSON. Sidecar
-        # state (agent_mode / kb_location) lives under composite keys like
-        # `<job_id>:agent_mode`, which we filter out by rejecting anything
+        # state (kb_location) lives under composite keys like
+        # `<job_id>:kb_location`, which we filter out by rejecting anything
         # with a colon so this endpoint only returns the bare job IDs.
         try:
             keys = self._client_keys_bytes('*')
@@ -203,6 +190,3 @@ class RedisCoordinator(interface.Coordinator):
     @typing.override
     def set_kb_location(self, job_id: str, kb_location: str) -> None:
         self.redis_client.set(f'{job_id}:kb_location', kb_location)
-
-    def get_agent_mode_key(self, job_id: str) -> str:
-        return f'{job_id}:agent_mode'
