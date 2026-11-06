@@ -1,5 +1,4 @@
 import http
-import json
 import time
 import typing
 import aiohttp
@@ -17,29 +16,65 @@ from workers.interface import AbstractWorker
 
 TO_QUERY_ENGINE_URL_UPLOAD_ONLY = 'http://queryengine:3000/uploadkb'
 
+# queryengine answers once the kb is written and sorted : minutes for a large
+# repo ( Discourse ), so no total timeout, only connect / read bounds.
+UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=3600)
+
+# facts files deleted concurrently after the upload ( ~50k for Discourse,
+# one by one took ~4 minutes )
+DELETE_CONCURRENCY = 64
+
 @dataclasses.dataclass(frozen=True)
 class Queryengine(AbstractWorker):
 
     @typing.override
     async def run(self, job_id: str) -> None:
         files = self.the_storage_guy.load_facts_metadata_from_db(job_id)
-        tasks = [self.read_facts_json(facts) for facts in files]
-        contents = await asyncio.gather(*tasks)
-        all_facts: list[dict] = []
-        for fact_list in contents:
-            all_facts.extend(fact_list)
+        try:
+            await self.upload_kb(job_id, files)
+        finally:
+            await self.delete_facts_files(files)
 
-        await self.upload_kb(job_id, all_facts)
+    async def delete_facts_files(self, files: list[FactsMetadata]) -> None:
+        semaphore = asyncio.Semaphore(DELETE_CONCURRENCY)
+
+        async def delete(f: FactsMetadata) -> None:
+            async with semaphore:
+                await self.the_storage_guy.delete_knowledge_base_facts(f)
+
+        await asyncio.gather(*(delete(f) for f in files))
+
+    # The body is the json array of every fact of the job, streamed from the
+    # facts files ( one json array per callable ) : one file in memory at a
+    # time. Building the whole array first held the kb in memory ( 4.4 GB for
+    # Discourse's 1.6M facts ), and queryengine parses it as a stream too.
+    @staticmethod
+    async def facts_json_array(files: list[FactsMetadata]) -> typing.AsyncIterator[bytes]:
+        yield b'['
+        first = True
+        for f in files:
+            async with aiofiles.open(f.facts_unique_id, 'rb') as fl:
+                content = (await fl.read()).strip()
+            elements = content[1:-1].strip() if content.startswith(b'[') and content.endswith(b']') else b''
+            if elements:
+                if not first:
+                    yield b','
+                yield elements
+                first = False
+        yield b']'
 
     # The kb is the only output : the agent loop queries it through
     # queryengine's /api ( kbapi ), there are no built-in queries.
-    async def upload_kb(self, job_id: str, all_facts: list[dict]) -> None:
+    async def upload_kb(self, job_id: str, files: list[FactsMetadata]) -> None:
         emessage = 'no exception'
         start = time.monotonic()
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT) as session:
             try:
-                async with session.post(TO_QUERY_ENGINE_URL_UPLOAD_ONLY, json=all_facts) as response:
+                facts = self.facts_json_array(files)
+                async with session.post(
+                    TO_QUERY_ENGINE_URL_UPLOAD_ONLY, data=facts, headers={'Content-Type': 'application/json'}
+                ) as response:
                     if response.status == http.HTTPStatus.OK:
                         result_json: dict[str, str] = await response.json()
                         if kb_location := result_json.get('kb_location', None):
@@ -77,9 +112,9 @@ class Queryengine(AbstractWorker):
 
             except aiohttp.ClientError as e:
                 emessage = f'aiohttp.ClientError: {e}'
-            # Anything not derived from aiohttp.ClientError (asyncio.TimeoutError,
-            # OSError, JSON serialization TypeError from json=all_facts on a
-            # huge payload, MemoryError, ...) still propagates up on purpose:
+            except TimeoutError as e:
+                emessage = f'TimeoutError: {e}'
+            # Anything else ( OSError, MemoryError, ... ) still propagates up on purpose:
             # those are the "worker is genuinely broken" cases and we want
             # them to surface as a container crash rather than be logged as
             # a normal per-job failure.
@@ -105,10 +140,3 @@ class Queryengine(AbstractWorker):
                 job_id,
                 Status.Finished
             )
-
-    async def read_facts_json(self, f: FactsMetadata) -> list[dict]:
-        async with aiofiles.open(f.facts_unique_id, 'rt', encoding='utf-8') as fl:
-            content = await fl.read()
-            result = json.loads(content)
-        await self.the_storage_guy.delete_knowledge_base_facts(f)
-        return result

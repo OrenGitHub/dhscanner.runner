@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-10-31
+Last updated: 2026-11-06
 
 ## the user flow under test
 
@@ -12,7 +12,7 @@ python -m cli run --create_knowledge_base_from ../DSpace --ignore_testing_code t
 python -m agent.loop --use_kb /tmp/kb_XXXXXXXX1-0.pl --max-items 5 -v
 ```
 
-The images are parsers 1.1.49, codegen 1.0.44, kbgen 1.0.50 and queryengine 1.0.77.
+The images are parsers 1.1.54, codegen 1.0.45, kbgen 1.0.50 and queryengine 1.0.81.
 The `.env` at the repo root is the only source of config.
 
 ## a testing effort
@@ -141,6 +141,120 @@ Open :
 - the KB lives in the queryengine container's `/tmp` : recreating the container ( eg a new image ) drops it
 - the queryengine answers `FoundHttpHandlers []` for a KB path that does not exist, not an error
 - `.gjs` ( 3,293 Ember files ) is not a scanned suffix
+
+## Discourse: random 5, source first, after #146 ( parsers 1.1.53 + codegen 1.0.45 + queryengine 1.0.80, 2026-11-06 ) : 5 safe, 0 sinks, 0 LLM
+
+Plain user flow, all prebuilt : 26 min scan, kb `/tmp/kb_XXXXXXXX1-0.pl` ( 268 MB, 1.24 M facts ), 1,290 seeded handlers, 5 items in 70 s ( ~14 s each, all of it the call-0 kbapi query ).
+The kb has 1,152 Ruby sqli sinks now ( every `DB.<sql method>` call, #142 ), but none of the five reaches one.
+
+| # | endpoint | reachable in the source | auth ( source ) | kb | agent |
+|---|---|---|---|---|---|
+| 1 | `user_api_keys_controller.rb:717` `requested_expires_at` | nothing : `UserApiKey::Expiry.requested_expires_at`. **Not an action** : the file has no `private`, so every helper after `:456` is public, and `config/routes.rb:2016-2025` routes none of them | n/a | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 2 | `mcp_oauth_authorizations_controller.rb:13` `show` ( GET ) | `ClientResolver.resolve!` ( ActiveRecord ), `validate_redirect!` ( raises, no redirect ), `render`. The `redirect_with` open redirect candidate is in `create`, not `show` | `redirect_to_login unless current_user`, `ensure_mcp_access`, not impersonating | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 3 | `sidebar_sections_controller.rb:83` `reset` | `sidebar_section.reset_community!` -> **2 x `DB.query <<~SQL` with `#{}`** ( `app/models/sidebar_section.rb:58,69` ), safe : the values come from the constant `SidebarUrl::COMMUNITY_SECTION_LINKS` and ids | `requires_login`, `ensure_can_edit!` | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 4 | `voice/room_memberships_controller.rb:12` `create` ( POST ) | ActiveRecord `save!`, `Voice::Livekit::RoomServiceClient.update_participant` -> `call` -> `post` -> 1st party `Voice::Livekit::Twirp.post` ( `twirp.rb:19` ) -> `FinalDestination::HTTP.start(uri.host, ..) do |http| http.post(..)` ( `twirp.rb:32-48` ), SSRF family, safe : admin configured host, `FinalDestination::HTTP < Net::HTTP` refuses private addresses | `guardian.ensure_can_manage_voice_room!` | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 5 | `categories_controller.rb:257` `update` ( PATCH ) | `cat.move_to(category_params[:position].to_i)` -> **3 x `DB.exec`** ( `app/models/concerns/positionable.rb:12,19,30` ), user input reaches SQL, safe : `to_i` + named binds, `#{}` is `table_name` only | `requires_login`, `ensure_can_edit!` | **2 calls** for a 60 line handler | safe ( 0 sinks ) |
+
+The five verdicts are right, given the kb and given the source. The agent did nothing wrong : it never ran.
+But 2 of the 5 ( #3, #5 ) reach real SQL sinks, and the kb sees neither. Both lose them at the same place.
+
+**The parsers drop every Ruby block body.** `RbParser.y:2283` `exp_block` ( syntax_tree `method_add_block` ) returns the call ( `$12` ) and throws the block away, and `block` ( `:2270` ) returns `Nothing`. So does `expLambda` ( `RbParserActions.hs:395`, params and body `[]` ).
+- #5 : lines 261-315 of `update` sit inside `json_result(@category, ...) do |cat|`. The kb has 2 calls for the handler ( `ensure_can_edit!`, `json_result` ), nothing at lines 261-315.
+- #3 : `reset_community!` wraps its body in `ActiveRecord::Base.transaction do`. The kb has the `transaction` call and **no fact at all at lines 51-73** of `sidebar_section.rb` : `update!`, `destroy_all`, both `DB.query`.
+- repro ( frontrb -> parsers, by hand ) : in `X::Y.transaction do update!(..) ; DB.query("select 1") end` and `[1].each do |u| DB.exec("select 3") end`, only `transaction` and `each` survive. `DB.query("select 2")` outside a block is kept.
+
+Size ( Discourse, non-spec, non-migration ) : **9,781 `do` blocks** over 4,966 files, plus `{ |x| ... }` blocks. **27% of controller methods ( 614 / 2,306 ) have a block in their body**, and ~81 of the 701 `DB.*` sql calls sit in a `do` block inside a `def` ( a line based estimate ). Rails idioms live in blocks : `transaction do`, `respond_to do |format|`, `each` / `map`, `hijack do`, `Scheduler::Defer.later do`, `json_result do`.
+
+Smaller, also found :
+- kb : once #3's block is kept, the edge to `reset_community!` is still missing. The kb resolves `sidebar_section.reset_community!` to the Show atom `'CallMethodOfClass ( ... ) "find_by" ( ClassName SidebarSection ).reset_community!'` and stops. ActiveRecord finders ( `find`, `find_by`, `find_by!`, `create!`, `new` ) return an instance of the receiver class. 824 resolved calls are rooted at `find_by`, about 8,800 at some `CallMethodOfClass`.
+- kb : #5 also needs `include Positionable` ( a concern ) as a super of `Category`, and the block param `cat` typed by `json_result`.
+- kb : #4 is not just a missing sink. `Twirp` is 1st party ( `plugins/voice/lib/voice/livekit/twirp.rb` ), and the chain breaks 3 times before the sink :
+  1. `Voice::Livekit::RoomServiceClient.update_participant` resolves to `'Unknown.Livekit.RoomServiceClient.update_participant'` : `Voice` is reopened in 57 plugin files, so the worker's "defined by exactly one file" rule binds nothing.
+  2. **`class << self` bodies are dropped** : `RbParser.y:2151` `stmt_sclass` returns `Nothing`. `room_service_client.rb` parses, but it has 0 facts in the kb ( `actualMethods: []` ). 148 Discourse files use `class << self`.
+  3. `Twirp.post` inside `Voice::Livekit` is a lexical constant ( the open "lexical names inside namespaces" item from #146 ).
+  4. in `twirp.rb` the kb does have `FinalDestination::HTTP.start` ( resolved, rooted at `lib/final_destination.rb` ). The SSRF sink belongs there ( `FinalDestination::HTTP < Net::HTTP`, `lib/final_destination/http.rb:3` ), or on `Net::HTTP.start` + subclasses. The `http.post` itself is in a `do |http|` block, so it is dropped too.
+- seeding : #1 is a public helper, not an action. This is the second Discourse five with a non-action ( after `show_browser_update?` on 2026-11-04 ). Verbs / urls from `config/routes.rb` would drop it.
+- cli : the status poll answered `invalid status response` twice during kbgen ( 12:41, 12:43 ), then recovered. The cli logs it as a status, it is not one.
+- seed : `auth_pattern_distribution` is still `unauth: 1290`. All 5 are login or guardian gated.
+
+### the most important thing to improve
+
+**Keep Ruby block bodies : lower `method_add_block` to the call with its block as a trailing `Ast.ExpLambda` argument ( params from `block_var`, body from `bodystmt` ), and the same for `->(x) { ... }`.** Example : `categories_controller.rb:260` `json_result(...) do |cat|` holds 55 of the 60 lines of `update`, including the user input -> `Positionable#move_to` -> `DB.exec` path.
+Probably a quick win, parsers only : TS already lowers callbacks this way ( `TsParserActions.hs:471` `expArrowFunction` ), so codegen / kbgen should treat a Ruby block like a JS callback with no change. Gate : golden over Discourse ( 0 parse regressions, `%expect 0` ), then the golden call count and the kb `sinks_sqli` count must go up ( 1,152 sinks today ).
+Next, in this order : ActiveRecord finder return types ( #3 ), then routes.rb ( #1 ).
+
+### done: block bodies kept ( parsers 1.1.54, predicates v1.4.0 )
+
+- parsers : a block is the call's last arg, an `Ast.ExpLambda` with its params and body ( `method_add_block`, `command`, `command_call` ). `->(x) { ... }` keeps its params and body too. Golden 7,777 Discourse files : 0 regressions, calls 171,899 -> 226,523, `%expect 0` holds.
+- predicates `callgraph/reach.pl` : a caller reaches a lambda passed as an argument of one of its call sites ( a ruby block, a js callback ).
+
+On the Discourse kb ( 1.6M facts, was 1.24M ) :
+
+| | before | after |
+|---|---|---|
+| ruby sqli sinks in the kb | 1,158 | 1,348 |
+| `kb_called_from` | 135,557 | 178,676 |
+| call sites reachable from the 1,290 handlers ( 10 hops ) | 10,026 | 13,745 |
+| `categories#update` reachable call sites | 2 | 30 |
+| handlers reaching an sqli sink | 4 | 4 |
+
+The kb now has the bodies, but no verdict changes yet : #5's sink is in `Positionable#move_to`, called on the block param `cat`, and #3's is behind `SidebarSection.find_by(...)`. The next layer is receiver types : ActiveRecord finder return types, block params, concern `include`s.
+
+### the kb upload ran docker out of memory, now streamed ( queryengine 1.0.81 )
+
+With block bodies kept, the kb grew to 1.6M facts. The queryengine worker sent them as one 541 MB json body : first a 413 ( limit 512 MB ), then, with the limit raised, the 16 GB docker vm ran out of memory and hung. queryengine logged `Num facts received: 1614644` and never `KB written`. It decoded the whole body as `[ Fact ]`, then built every line as a `String`, `unlines`d and sorted them.
+
+Fix : both ends stream. The worker sends the facts files as one streamed json array ( one file in memory at a time ). queryengine parses it one element at a time ( `json-stream`, then `FromJSON Fact` ), writes one NUL terminated record per fact, and sorts with `LC_ALL=C sort -z` ( 412 facts span lines : multi line strings ). A body that is not a json array of facts is a 400, no kb is written. Measured on Discourse :
+
+| | whole body | streamed |
+|---|---|---|
+| queryengine_worker memory | 4.4 GB | 175 MB |
+| queryengine memory | 8.8 GB | < 1.5 GB ( the 10 s sampler missed the short peak, `sort -S 1G` bounds it ) |
+| queryengine stage | 4 min 45 s | 30 s ( + the facts file deletes, now 64 at a time ) |
+| kb | 348,441,459 bytes | byte for byte the same ( sha256 `d4599e78...` ) |
+
+### performance baseline ( Discourse, 10,302 files )
+
+Every stage keeps ~1.5 of the 20 logical cores busy ( i9-13900H ), and the Haskell services are mostly idle : the python workers ( one asyncio process each ) and the per file log rows are the bottleneck.
+
+| stage | wall time | busy cores | top users |
+|---|---|---|---|
+| upload | 3.6 min | 1.2 | app 0.8, logger 0.3 |
+| native parsing | 4.3 min | 1.3 | frontrb 0.6 ( one ruby process ), native_parser 0.3, logger 0.3 |
+| dhscanner parsing | 3.2 min | 1.5 | dhscanner_parser 0.5, parsers 0.5, logger 0.4 |
+| codegen | 3.6 min | 1.3 | codegen_worker 0.7, codegen 0.4, logger 0.3 |
+| kbgen | 11.9 min | 1.6 | kbgen_worker 0.5, logger 0.7, kbgen 0.2 |
+| queryengine | 4 min 45 s -> 30 s | | ( streamed, above ) |
+
+Found on the way :
+- the cli logs a failed status poll as the status `invalid status response`
+- an interrupted queryengine stage leaves its job `WaitingForQueryengine` with half deleted facts files : on restart the worker crashed on the first missing file ( `FileNotFoundError` ), the workers have no restart policy
+
+## Discourse: random 5, source first, prebuilt parsers 1.1.52 + queryengine 1.0.78 ( 2026-11-04 ) : 5 safe, 0 sinks, 0 LLM
+
+Plain user flow : 10,302 files, 24 min scan ( upload 4, native parsing 4, dhscanner parsing 2, codegen 3, kbgen 8, queryengine 3 ), 1,288 seeded handlers, 5 items in 51 s ( ~10 s each, all of it the call-0 kbapi query ).
+The 10,302 files : 4,965 Ruby, 2,538 Ruby migrations ( `db/migrate`, `db/post_migrate`, core + plugins ), 2,455 `.js`, 152 `.ts`, 192 `.yml`. The migrations are schema DDL : filter them, and `vendor/`, in `cli/run.py:relevant()`.
+
+| # | endpoint | reachable in the source | auth ( source ) | kb | agent |
+|---|---|---|---|---|---|
+| 1 | `polls_controller.rb:34` `toggle_status` | `DiscoursePoll::Poll.toggle_status` ( `plugins/poll/lib/poll.rb:151` ) : `Post.find_by`, `Poll.find_by`, a poll update, all ActiveRecord ( parameterized ), behind `can_see?` + OP-or-staff | `ensure_logged_in`, `ensure_can_see_post` ( `:6-7` ) | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 2 | `tag_groups_controller.rb:66` `update` ( PATCH ) | `@tag_group.update(tag_groups_params)` : ActiveRecord, strong params | `requires_login`, `ensure_staff` ( `:6-7` ), `ensure_can_admin_tag_groups!` | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 3 | `application_controller.rb:77` `show_browser_update?` | nothing, it reads `request.user_agent` | n/a | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 4 | `chat/api/channel_pins_controller.rb:38` `create` ( POST ) | `Chat::PinMessage.call(service_params)` : a service object, ActiveRecord insert, `can_pin` policy | `ensure_logged_in` + `ensure_can_chat` ( `chat/base_controller.rb:7-8` ) | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+| 5 | `ai_bot/conversations_controller.rb:46` `update_starred` | `UpdateConversationStar.call(...)` : a service object, ActiveRecord | `requires_login` ( `:10` ) | 0 sinks, `pre_auth` | safe ( 0 sinks ) |
+
+The five verdicts are right, given the kb and given the source : none of them reaches a dangerous sink.
+But the kb is right for the wrong reason. queryengine has **no Ruby sink in any of the six families the loop asks for** ( `FileOperation*`, `OpenRedirect`, `SSRF`, `SQL` ) : the one Ruby sink is `YAML.load_stream` ( `sinks/deser/ruby/native.pl` ). So every Discourse endpoint settles as `safe` with 0 sinks and no LLM session, the same place Weblate was before its Django sinks ( #129 ).
+
+Smaller, also found :
+- auth : the seed calls all 1,288 handlers `unauth` / `pre_auth`. All 5 above are login-required. There are no Ruby auth predicates ( `predicates/auth` has `nodejs/` only ) : `before_action :ensure_logged_in`, `requires_login`, `ensure_staff`, inherited from the base controller.
+- seeding : #3 is not an action. It is a `helper_method` of `ApplicationController`, the abstract base of every controller, never routed.
+- 3 of the 4 real sinks sit one cross-file call away ( `DiscoursePoll::Poll.toggle_status`, `Chat::PinMessage.call`, `UpdateConversationStar.call` ). Ruby has no imports ( zeitwerk autoload ), so a sink catalog alone may still answer 0 for them. Check the call edges right after the catalog.
+
+### the most important thing to improve
+
+**A Rails sink catalog in queryengine, starting with ActiveRecord ( `SQL` ) and `redirect_to` ( `OpenRedirect` ).** Tracked in [#142](https://github.com/OrenGitHub/dhscanner.runner/issues/142). 4 of the 5 endpoints reach ActiveRecord calls ( safe, parameterized ), and with 0 Ruby sinks the agent never runs on Discourse.
+Partly a quick win : name-matchable sinks ( `redirect_to`, `find_by_sql`, `where` with an interpolated string, Discourse's mini_sql `DB.query` / `DB.exec`, `send_file`, `File.*`, `Net::HTTP` / `FinalDestination` ) are like `sinks/db/python/django.pl`. ActiveRecord on a receiver like `@tag_group` with an unknown type is not.
 
 ## Weblate: random 5, source first, prebuilt parsers 1.1.49 + codegen 1.0.44 ( 2026-10-31 ) : 1 `suspicious`, wrong
 
