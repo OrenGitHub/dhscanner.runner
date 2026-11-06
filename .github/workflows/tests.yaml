@@ -765,3 +765,41 @@ jobs:
 
       - name: remove Weblate tested code
         run: rm -rf weblate-src weblate_scan.log
+
+      - name: scan full Discourse repo ( Rails endpoints + Ruby sqli sinks )
+        run: |
+          # Agent-mode scan of the full Discourse tree, pinned to the commit
+          # the Rails recognizer ( runner #138 ) and the mini_sql sinks
+          # ( runner #142 / #146 ) were measured on.
+          git init -q discourse-src
+          git -C discourse-src fetch -q --depth 1 https://github.com/discourse/discourse.git b81bee142d364526b432788251986871952b5ddb
+          git -C discourse-src checkout -q FETCH_HEAD
+          python -m cli run --create_knowledge_base_from ./discourse-src --ignore_testing_code true 2>&1 | tee discourse_scan.log
+          kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' discourse_scan.log | awk '{print $1}' | tail -n 1)
+          if [ -z "$kb_path" ]; then
+            echo "could not extract kb filename from scan log"
+            exit 1
+          fi
+          echo "discourse_kb_path=$kb_path" >> "$GITHUB_ENV"
+
+      - name: assert >= 1200 Rails handlers on the Discourse KB
+        run: |
+          # SelectHttpHandlers is the agent's seed query : 0 handlers on
+          # Discourse before #138, 1,290 now. Raise the floor as more
+          # controllers parse.
+          compose="docker compose             -f ./compose/compose.base.yaml             -f ./compose/compose.app.yaml             -f ./compose/compose.fronts.yaml             -f ./compose/compose.prebuilt.yaml             -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${discourse_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/discourse_endpoints.py
+
+      - name: assert >= 1100 sqli sinks on the Discourse KB
+        run: |
+          # Every `DB.exec / query / query_single / ...` call : `DB` is bound
+          # to its assignment in config/initializers/000-mini_sql.rb, whose
+          # class has the 3rd party super MiniSql::ActiveRecordPostgres::Connection.
+          # 6 sinks before #142 / #146, 1,158 now ( 1,152 of them Ruby ).
+          compose="docker compose             -f ./compose/compose.base.yaml             -f ./compose/compose.app.yaml             -f ./compose/compose.fronts.yaml             -f ./compose/compose.prebuilt.yaml             -f ./compose/compose.workers.yaml"
+          $compose cp tests/prolog/sqli_sinks.pl queryengine:/tmp/sqli_sinks.pl
+          $compose exec -T -w /queryengine queryengine swipl /tmp/sqli_sinks.pl -- "${discourse_kb_path}" 1100
+
+      - name: remove Discourse tested code
+        run: rm -rf discourse-src discourse_scan.log
