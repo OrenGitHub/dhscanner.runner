@@ -230,6 +230,23 @@ Found on the way :
 - the cli logs a failed status poll as the status `invalid status response`
 - an interrupted queryengine stage leaves its job `WaitingForQueryengine` with half deleted facts files : on restart the worker crashed on the first missing file ( `FileNotFoundError` ), the workers have no restart policy
 
+### native parsing : one metadata commit per job ( [#150](https://github.com/OrenGitHub/dhscanner.runner/issues/150), 2026-11-07 )
+
+**The front is not the limit.** `fronts/rb` with one puma worker per core ( 20 instead of 1 ) : native parsing 4.3 -> 4.0 min, `frontrb` still 0.69 cores.
+
+A timing pass in `native_parser` ( per step, summed over the 8 files in flight ) found the limit in the worker. A native ast is two things : the `.native.ast` file on the shared volume ( `aiofiles`, async ) and its metadata row in sqlite ( `native_asts` : file path, job, original filename, language, module / path mappings ). The row was committed right after its file, one transaction + fsync per file, **a synchronous call inside the asyncio worker** : 18 ms x 10,296 = 185 s of the 270 s pass, during which no other file moved.
+
+Fix : the file is still written when its ast arrives, the rows are collected and stored in **one commit at the end of `run()`**. Safe because `dhscanner_parser` is the only reader of `native_asts`, and it runs only after the worker loop sets `WaitingForDhscannerParsing`, which happens after `run()` returns.
+
+| Discourse, 10,302 files ( both runs with the timing pass ) | per row commit | one commit per job |
+|---|---|---|
+| native parsing stage | 5.0 min | 2.4 min |
+| pass 2 ( native asts ) | 270.6 s | 119.4 s |
+| sqlite commits | 10,296, 185 s blocking | 1, 0.5 s |
+| `native_asts` rows of the job | 10,296 | 10,301 ( = asts saved ) |
+
+Pass 1 ( ruby globals, every rb file through the front a first time ) : 24.5 s. Next : the 3 awaited log calls per file ( 19 ms avg, a new `aiohttp.ClientSession` each, one postgres commit per row in `logger_server` ). `store_file_metadata_in_db` ( upload ), `store_dhscanner_ast_metadata_in_db` and `store_callables_metadata_in_db` commit one row at a time too.
+
 ## Discourse: random 5, source first, prebuilt parsers 1.1.52 + queryengine 1.0.78 ( 2026-11-04 ) : 5 safe, 0 sinks, 0 LLM
 
 Plain user flow : 10,302 files, 24 min scan ( upload 4, native parsing 4, dhscanner parsing 2, codegen 3, kbgen 8, queryengine 3 ), 1,288 seeded handlers, 5 items in 51 s ( ~10 s each, all of it the call-0 kbapi query ).

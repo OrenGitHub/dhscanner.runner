@@ -171,23 +171,26 @@ class LocalStorage(interface.Storage):
         )
 
     @typing.override
-    async def save_native_ast(self, content: str, f: models.FileMetadata) -> None:
+    async def save_native_ast(self, content: str, f: models.FileMetadata) -> models.NativeAstMetadata:
 
         native_ast = f'{f.file_unique_id}.native.ast'
         async with aiofiles.open(native_ast, 'wt') as fl:
             await fl.write(content)
 
-        LocalStorage.store_native_ast_metadata_in_db(
-            models.NativeAstMetadata(
-                native_ast_unique_id=native_ast,
-                job_id=f.job_id,
-                original_filename=f.original_filename,
-                language=f.language,
-                module_name_resolver=f.module_name_resolver,
-                github_url=f.github_url,
-                path_mappings=f.path_mappings
-            )
+        return models.NativeAstMetadata(
+            native_ast_unique_id=native_ast,
+            job_id=f.job_id,
+            original_filename=f.original_filename,
+            language=f.language,
+            module_name_resolver=f.module_name_resolver,
+            github_url=f.github_url,
+            path_mappings=f.path_mappings
         )
+
+    @typing.override
+    async def save_native_asts_metadata(self, rows: list[models.NativeAstMetadata]) -> None:
+        # one commit per job : blocking it is fine
+        LocalStorage.store_native_asts_metadata_in_db(rows)
 
     @typing.override
     async def load_native_ast(self, a: models.NativeAstMetadata) -> typing.Optional[bytes]:
@@ -606,9 +609,9 @@ class LocalStorage(interface.Storage):
             session.commit()
 
     @staticmethod
-    def store_native_ast_metadata_in_db(a: models.NativeAstMetadata) -> None:
+    def store_native_asts_metadata_in_db(rows: list[models.NativeAstMetadata]) -> None:
         with db.SessionLocal() as session:
-            session.add(a)
+            session.add_all(rows)
             session.commit()
 
     @staticmethod
