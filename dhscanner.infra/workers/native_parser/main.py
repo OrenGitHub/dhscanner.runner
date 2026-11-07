@@ -42,8 +42,13 @@ AST_BUILDER_URL = {
 RUBY_GLOBALS_URL = 'http://frontrb:3000/to/native/cruby/globals'
 
 def _zeitwerk_basename(name: str) -> str:
-    '''`MiniSqlMultisiteConnection` -> `mini_sql_multisite_connection.rb`'''
-    return re.sub(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', '_', name).lower() + '.rb'
+    '''
+    `MiniSqlMultisiteConnection` -> `mini_sql_multisite_connection.rb`,
+    a qualified name ( dotted by the front ) -> its path,
+    `Admin.StaffController` -> `admin/staff_controller.rb`
+    '''
+    parts = name.split('.')
+    return '/'.join(re.sub(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', '_', p).lower() for p in parts) + '.rb'
 
 
 def _defining_file(name: str, files: set[str]) -> typing.Optional[str]:
@@ -55,7 +60,7 @@ def _defining_file(name: str, files: set[str]) -> typing.Optional[str]:
     if len(files) == 1:
         return next(iter(files))
     basename = _zeitwerk_basename(name.lstrip('$'))
-    candidates = [f for f in files if f.rsplit('/', 1)[-1] == basename]
+    candidates = [f for f in files if f == basename or f.endswith('/' + basename)]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -184,7 +189,9 @@ class NativeParser(AbstractWorker):
             name: [file, fs[file]] for name, fs in sorted(defined_in.items())
             if (file := _defining_file(name, set(fs))) is not None
         }
-        external = sorted(uses - constants - set(defined_in))
+        # a qualified use ( `Admin.StaffController` ) is bound or left alone :
+        # a gem is its first part ( `MiniSql` ), whatever follows
+        external = sorted(n for n in uses - constants - set(defined_in) if '.' not in n)
         fields = {}
         if globals_:
             fields['ruby_globals'] = json.dumps(globals_)
