@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from common.language import Language
 from coordinator.interface import Status
-from storage.models import FileMetadata
+from storage.models import FileMetadata, NativeAstMetadata
 from logger.models import Context, LogMessage
 from workers.interface import AbstractWorker
 
@@ -105,7 +105,9 @@ class NativeParser(AbstractWorker):
                 Language.RB: await self._ruby_fields(session, files, limit)
             }
             tasks = [self.run_single_file_bounded(session, f, fields.get(f.language, {}), limit) for f in files]
-            await asyncio.gather(*tasks)
+            # the metadata rows of the saved native asts, stored at once
+            rows = [row for row in await asyncio.gather(*tasks) if row is not None]
+            await self.the_storage_guy.save_native_asts_metadata(rows)
 
     async def run_single_file_bounded(
         self,
@@ -113,9 +115,9 @@ class NativeParser(AbstractWorker):
         f: FileMetadata,
         fields: dict[str, str],
         limit: asyncio.Semaphore
-    ) -> None:
+    ) -> typing.Optional[NativeAstMetadata]:
         async with limit:
-            await self.run_single_file(session, f, fields)
+            return await self.run_single_file(session, f, fields)
 
     async def _python_fields(self, files: list[FileMetadata]) -> dict[str, str]:
         '''
@@ -218,14 +220,18 @@ class NativeParser(AbstractWorker):
         session: aiohttp.ClientSession,
         f: FileMetadata,
         fields: dict[str, str]
-    ) -> None:
+    ) -> typing.Optional[NativeAstMetadata]:
+        '''the metadata row of the saved native ast, not yet stored'''
 
+        row = None
         if code := await self.read_source_file(f):
             if content := await self.parse(session, code, f, fields):
-                await self.the_storage_guy.save_native_ast(content, f)
+                row = await self.the_storage_guy.save_native_ast(content, f)
 
             # either way - delete the source file ...
             await self.the_storage_guy.delete_file(f)
+
+        return row
 
     async def parse(
         self,

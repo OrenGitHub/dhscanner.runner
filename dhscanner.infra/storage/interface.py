@@ -41,8 +41,22 @@ class Storage(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def save_native_ast(self, content: str, f: FileMetadata) -> None:
-        ...
+    async def save_native_ast(self, content: str, f: FileMetadata) -> NativeAstMetadata:
+        '''
+        Writes the native ast file and returns its metadata row, not yet
+        stored : the caller stores the rows of a whole job at once with
+        `save_native_asts_metadata` ( one commit per row, on the event loop,
+        froze the native parser 185 of 270 s on Discourse, runner #150 ).
+        '''
+
+    @abc.abstractmethod
+    async def save_native_asts_metadata(self, rows: list[NativeAstMetadata]) -> None:
+        '''
+        Stores the rows in one transaction. Nothing reads them before the
+        job leaves `WaitingForNativeParsing` ( `dhscanner_parser` is the
+        only reader ), so the native parser stores them once, at the end
+        of the job.
+        '''
 
     @abc.abstractmethod
     async def load_native_ast(self, a: NativeAstMetadata) -> typing.Optional[bytes]:
