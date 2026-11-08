@@ -48,35 +48,35 @@ class Expected(typing.NamedTuple):
     name: str
     filename: str
     line: int
-    # ( line, colStart ) of each `params` call
-    inputs: list[tuple[int, int]]
-    # ( filename, lineStart, colStart ) of each control flow reachable sql sink
-    sinks: list[tuple[str, int, int]]
+    # the line of each `params` call
+    inputs: list[int]
+    # ( filename, lineStart ) of each control flow reachable sql sink
+    sinks: list[tuple[str, int]]
     # the sinks some input flows into ; the rest get a null path
-    flows_into: list[tuple[str, int, int]]
+    flows_into: list[tuple[str, int]]
 
 
 EXPECTED = [
     Expected(
         "A CategoriesController#set_notifications",
         "app/controllers/categories_controller.rb", 356,
-        inputs=[(357, 11716), (358, 11768)],
-        sinks=[("app/models/category_user.rb", 88, 2434), ("app/models/category_user.rb", 125, 3635)],
+        inputs=[357, 358],
+        sinks=[("app/models/category_user.rb", 88), ("app/models/category_user.rb", 125)],
         flows_into=[],
     ),
     Expected(
         "B TagsController#update_notifications",
         "app/controllers/tags_controller.rb", 438,
-        inputs=[(439, 14332)],
-        sinks=[("app/models/tag_user.rb", 134, 3767), ("app/models/tag_user.rb", 174, 5683)],
+        inputs=[439],
+        sinks=[("app/models/tag_user.rb", 134), ("app/models/tag_user.rb", 174)],
         flows_into=[],
     ),
     Expected(
         "C Admin::UsersController#penalty_history",
         "app/controllers/admin/users_controller.rb", 107,
-        inputs=[(142, 4383)],
-        sinks=[("app/controllers/admin/users_controller.rb", 128, 4024)],
-        flows_into=[("app/controllers/admin/users_controller.rb", 128, 4024)],
+        inputs=[142],
+        sinks=[("app/controllers/admin/users_controller.rb", 128)],
+        flows_into=[("app/controllers/admin/users_controller.rb", 128)],
     ),
 ]
 
@@ -107,8 +107,10 @@ def handlers(kb_location: str) -> list[dict[str, typing.Any]]:
     return matches
 
 
-def sink_key(sink: Location) -> tuple[str, int, int]:
-    return (str(sink["filename"]), int(sink["lineStart"]), int(sink["colStart"]))
+def sink_key(sink: Location) -> tuple[str, int]:
+    # lines, not columns : a column is an offset from the start of the file,
+    # so it depends on the checkout's line endings ( crlf vs lf )
+    return (str(sink["filename"]), int(sink["lineStart"]))
 
 
 def check(kb_location: str, found: list[dict[str, typing.Any]], expected: Expected) -> list[str]:
@@ -120,7 +122,7 @@ def check(kb_location: str, found: list[dict[str, typing.Any]], expected: Expect
     errors: list[str] = []
 
     inputs: list[Location] = [i["contents"]["requestParamLocation"] for i in handler["httpHandlerUserInputs"] if i["tag"] == "RequestParamCtor"]
-    got_inputs = sorted((i["lineStart"], i["colStart"]) for i in inputs)
+    got_inputs = sorted(int(i["lineStart"]) for i in inputs)
     print(f"   user inputs ( params calls ) : {got_inputs}")
     if got_inputs != sorted(expected.inputs):
         errors.append(f"{expected.name} : user inputs {got_inputs}, expected {sorted(expected.inputs)}")
