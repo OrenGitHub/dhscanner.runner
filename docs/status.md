@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-11-06
+Last updated: 2026-11-07
 
 ## the user flow under test
 
@@ -41,6 +41,118 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Discourse: random 10, source first, prebuilt parsers 1.1.54 + queryengine 1.0.81 ( 2026-11-07 ) : 10 safe, 0 sinks, 0 LLM
+
+Plain user flow : scan 28 min ( 10:29 -> 10:57 ), kb `/tmp/kb_XXXXXXXX1-1.pl` ( 348 MB, 1.6M facts ), 1,290 seeded handlers ( 739 `UNKNOWN` verb ), 10 items in 3 min ( ~18 s each, all of it call 0 ). Trace `agent/.scan_traces/kb_XXXXXXXX1-1/20261107T085803Z-39609`.
+
+| # | endpoint | reachable in the source | auth ( source ) | kb | agent |
+|---|---|---|---|---|---|
+| 1 | `groups_controller.rb:735` `test_email_settings` | user `host` / `port` -> `EmailSettingsValidator.validate_as_user` -> `public_send("validate_#{protocol}")` -> `Net::SMTP.new(host, port).start` ( `email_settings_validator.rb:88,119` ), **SSRF family, checked** : `FinalDestination::SSRFDetector.lookup_and_filter_ips(email_host)` first ( `:752` ) | `requires_login`, `ensure_can_admin_group!` | 0 sinks : no Ruby SSRF catalog, no edge to `validate_as_user` ( see below ), then `public_send` | safe ( 0 sinks ) |
+| 2 | `discourse_workflows/workflow_tags_controller.rb:7` `index` ( GET ) | `WorkflowTag::List.call` -> ( `Service::Base` DSL `model :workflow_tags` ) `fetch_workflow_tags` : AR `.joins(<const sql>)` | `Admin::AdminController` | 0 sinks | safe ( 0 sinks ) |
+| 3 | `admin/groups_controller.rb:79` `automatic_membership_count` | user domains -> `Group.automatic_membership_users` -> `.where("user_emails.email ~* ?", pattern)`, SQL, bound | `Admin::StaffController`, `ensure_can_create_group!` | 0 sinks | safe ( 0 sinks ) |
+| 4 | `access_control_lists_controller.rb:26` `evaluate` | `AccessControlList::EvaluateModification.call` ( `Service::Base` ) | `requires_login` | 0 sinks | safe ( 0 sinks ) |
+| 5 | `admin/users_controller.rb:541` `total_other_accounts_with_same_ip` | `AdminUserIndexQuery#count_users` -> AR `where` with binds, `ip_type` through an allow-list hash | `Admin::StaffController` | 0 sinks | safe ( 0 sinks ) |
+| 6 | `discourse_workflows/step_executions_controller.rb:7` `create` ( POST ) | `Workflow::ExecuteStep.call` ( `Service::Base` ) | `Admin::AdminController` | 0 sinks | safe ( 0 sinks ) |
+| 7 | `admin/users_controller.rb:32` `index` ( GET ) | user `order` -> `SORTABLE_MAPPING[...]` -> **`.order("#{col} #{dir} NULLS LAST")`** ( `admin_user_index_query.rb:54-69` ), SQL by order clause, **checked by an allow-list** | `Admin::StaffController` | 0 sinks | safe ( 0 sinks ) |
+| 8 | `discourse_poll/polls_controller.rb:66` `grouped_poll_results` | `Poll.grouped_poll_results` : `user_field_name` checked against `SiteSetting.poll_groupable_user_fields`, hash `where` | **no login** ( `except: grouped_poll_results` ), `ensure_can_see_post` | 0 sinks | safe ( 0 sinks ) |
+| 9 | `application_controller.rb:87` `include_splash_screen?` | nothing. **Not an action** : a `helper_method` of `ApplicationController` | n/a | 0 sinks | safe ( 0 sinks ) |
+| 10 | `ai_bot/artifact_key_values_controller.rb:48` `destroy` ( DELETE ) | AR `find_by(user_id: current_user.id, key:)`, `destroy` | `ensure_logged_in` | 0 sinks | safe ( 0 sinks ) |
+
+The ten verdicts are right, given the kb and the source, but the agent never ran : third Discourse sample in a row with 0 LLM sessions.
+Four of the ten ( #1, #3, #5, #7 ) reach a real sink in the source, and two of those have a check the LLM should judge ( #1 SSRF detector, #7 order allow-list ).
+
+**The callgraph has no Ruby method-call edge.** `callgraph/reach.pl` follows 1st party funcs, the next.js HOC, java dispatch and lambdas. Nothing follows a Ruby `Foo.bar(...)` or `Foo.new(...).bar`, though the kb has every fact for it :
+- #1 : `kb_call_method_of_class( <:777 call>, 'validate_as_user', <EmailSettingsValidator> )`, plus `kb_method_of_class` / `kb_method_has_name` for `validate_as_user` in `email_settings_validator.rb`. No edge.
+- #7 : `query.find_users` resolves to `'CallMethodOfClass (...) "new" (ClassName (Named {content = "AdminUserIndexQuery", ...})).find_users'`. No edge.
+
+Probe ( scratchpad, swipl in the queryengine container, the same kb, 10 hops ) : two extra edges, reusing `callgraph_java_lookup/3` ( nearest definition up the 1st party supers ) :
+1. `kb_call_method_of_class(Call, M, Class)`, `M \== new` -> method `M` of `Class`
+2. a call resolved to `CallMethodOfClass (...) "<ctor>" (ClassName (Named {content = C, location = F})).M`, with `<ctor>` in `new`, `find`, `find_by`, `find_by!`, `create`, `create!`, `first`, ... -> method `M` of class `C` in `F`
+
+| 1,290 Discourse handlers | today | + the 2 edges |
+|---|---|---|
+| reachable call sites | 13,745 | 20,479 |
+| handlers whose reach grows | | 314 |
+| handlers reaching an sqli sink | 4 | **22** |
+| timeouts ( 30 s each ) | 0 | 0 |
+
+One of the 18 new ones is `sidebar_sections_controller.rb:83` `reset`, #3 of the 2026-11-06 five ( `SidebarSection.find_by(...).reset_community!` -> 2 x `DB.query` ).
+All 2,580 reach queries ran in one swipl process within the same run as the kb load.
+
+Next breaks, in the order found :
+- parsers : **`vcall` is lowered to a variable.** `RbParser.y:1021` `expVcall` -> `Actions.expvarify`. A syntax_tree `vcall` is a receiverless, argless method call ( `find_users_query` in `find_users_query.limit(limit)`, `admin_user_index_query.rb:43` ). The kb has `'Unknown.limit'` and no call to `find_users_query`, so #7 stops at `find_users`. Quick win : lower `vcall` to a 0 arg call ( a real var is a `var_ref`, a different node ).
+- predicates : **no Ruby SSRF catalog.** The kb has 164 `Net::HTTP` / `Net::SMTP` / `Net::POP3` / `Excon` / `Faraday` call sites ( `Net.SMTP.new` at `email_settings_validator.rb:88` resolves cleanly ). With the edges above, 1 handler reaches one, #1 still doesn't : `public_send("validate_#{protocol}")` is dynamic ( protocol is the const `"smtp"` at the call site ).
+- predicates : **no ActiveRecord raw SQL catalog.** Only `DB.*` ( mini_sql ). The kb has 2,003 `.where`, 474 `.order`, 302 `.joins` call sites. Most are bound or hash args, so they are *safe sinks*, the kb facts the methodology wants : #3, #5 and #7 would put an allow-list / binds in front of the LLM.
+- predicates : **`Service::Base` steps.** 220 services, ~204 handler call sites ( `X.call(service_params) do on_success ... end` ). The steps run from the DSL ( `model :workflow_tags` -> `fetch_workflow_tags`, `policy`, `step`, `transaction` ), so #2, #4 and #6 stop at `.call`.
+- seeding : **34 of the 1,290 seeds are `ApplicationController` methods** ( #9 ). `config/routes.rb` routes none ( no `application#` ). Third Discourse sample with a non-action. Quick win : skip `ApplicationController` in `endpoints/ruby/rails.pl`.
+- seeding : `auth_pattern_distribution` is still `unauth: 1290`. 9 of the 10 are gated ( `Admin::AdminController` / `StaffController` supers, `requires_login`, `before_action :ensure_logged_in` ), #8 is open on purpose.
+- parsers : 28,183 of the 170,730 Ruby `kb_call_resolved` ( 16.5% ) are the `'fstring'` placeholder, eg the plain literal `"smtp"` ( `groups_controller.rb:779` ).
+- cli : `invalid status response` twice at the native parsing -> dhscanner parsing switch ( 10:35:55 ), recovered.
+
+### a second ten, same kb ( trace `20261107T110719Z-96265` ) : 10 safe, 0 sinks, 0 LLM
+
+| # | endpoint | reachable in the source | auth ( source ) | kb | agent |
+|---|---|---|---|---|---|
+| 1 | `finish_installation_controller.rb:12` `index` ( GET ) | `SiteSetting` writes, no sink | **none**, `ensure_no_admins` ( only before the first admin ) | 0 sinks | safe |
+| 2 | `mcp_oauth_tokens_controller.rb:12` `create` ( POST ) | `TokenIssuer.exchange_code!` / `refresh!` : AR `find_by(code_hash: digest(code))`, redirect uri exact match, PKCE `secure_compare` | none, an OAuth token endpoint ( csrf skipped on purpose ) | 0 sinks | safe |
+| 3 | `list_controller.rb:273` `hot_feed` | `topic_query(nil).list_hot` -> `TopicQuery` SQL ( AR ) | none, public rss | 0 sinks | safe |
+| 4 | `mcp_oauth_authorizations_controller.rb:26` `create` ( POST ) | **two checked sinks** : user `client_id` url -> `ClientResolver.resolve!` -> `fetch_metadata` -> `FinalDestination.new(uri).get` ( SSRF, `lib/discourse_mcp/oauth.rb:139`, checked by `valid_client_id_uri?` https / no userinfo, the `approved_domains` policy, `FinalDestination validate_uri` ), and user `redirect_uri` -> `redirect_to uri.to_s, allow_other_host: true` ( open redirect, `:89`, checked by `validate_redirect!` = `client.allows_redirect_uri?` exact match ) | `requires_login`, `ensure_mcp_access`, not impersonating | 0 sinks, 9 reachable calls | safe |
+| 5 | `application_controller.rb:102` `bfcache_compatibility_mode?` | **not an action**, a `helper_method` | n/a | 0 sinks | safe |
+| 6 | `admin/users_controller.rb:439` `destroy_bulk` | `User::BulkDestroy.call` in `hijack do` ( `Service::Base` ) | `Admin::StaffController` | 0 sinks | safe |
+| 7 | `tags_controller.rb:107` `list` | user `filter` -> `.where("LOWER(tags.name) ILIKE ?", "%#{filter}%")`, SQL, bound | none, public | 0 sinks | safe |
+| 8 | `user_api_keys_controller.rb:438` `revoke` | header `User-Api-Key` -> `UserApiKey.with_key` ( `where(key_hash: hash_key(key))` ), `find_key` owner / admin check | `requires_login` | 0 sinks | safe |
+| 9 | `site_controller.rb:18` `custom_html` | nothing | redirect to login if required | 0 sinks | safe |
+| 10 | `admin/screened_ip_addresses_controller.rb:8` `index` ( GET ) | user `filter` -> `.where("cidr :filter >>= ip_address ...", filter:)`, SQL, bound | `Admin::StaffController`, `can_see_ip` | 0 sinks | safe |
+
+Same picture : verdicts right, no LLM, 5 of 10 reach a real sink in the source ( #3, #4, #7, #8, #10 ), and #4 is the best LLM test case so far ( two sinks, two different checks ).
+Another `ApplicationController` helper ( #5 ). #4 shows two more missing edges, both with the facts in the kb :
+- **a receiverless call with args resolves to the bare name** : `validate_redirect!(client)` -> `'validate_redirect!'`, `redirect_with(...)` -> `'redirect_with'`. The java "unqualified" rule wants `'Unknown.<m>'`, so the method of the caller's class is never linked.
+- **a nested constant path** : `DiscourseMcp::OAuth::ClientResolver.resolve!` -> `'FirstPartyImport (... Just "DiscourseMcp"}).OAuth.ClientResolver.resolve!'`, and the kb has `kb_class_def( _, 'DiscourseMcp.OAuth.ClientResolver', 'lib/discourse_mcp/oauth.rb' )`.
+
+Probe with all 4 edges ( the 2 above + the 2 from the first ten ), all 1,290 handlers, 10 hops :
+
+| | today | + class method / ctor chain | + bare name / nested constant |
+|---|---|---|---|
+| reachable call sites | 13,745 | 20,479 | **35,720** |
+| handlers reaching an sqli sink | 4 | 22 | **37** |
+| handlers reaching `Net::*` / `Excon` / `Faraday` | 0 | 1 | 3 |
+| timeouts | 0 | 0 | 0 |
+
+With the 4 edges, #4 reaches 237 call sites ( was 9 ), **both of its sinks included** : `FinalDestination.new(..).get` ( `oauth.rb:139` ) and `redirect_to` ( `:89` ). Only the catalog is missing : no Ruby open redirect ( 69 `redirect_to` call sites in the kb ), no Ruby SSRF ( 9 `FinalDestination.new` + 164 `Net::*` / `Excon` / `Faraday` ).
+
+### the most important thing to improve
+
+**Ruby method-call edges in `callgraph/`, through `callgraph_java_lookup/3` :**
+1. `Foo.bar(...)` ( `kb_call_method_of_class` ) -> `bar` of `Foo`
+2. `Foo.new / find_by / create! (...).bar` ( the `CallMethodOfClass` Show atom ) -> `bar` of `Foo`
+3. `bar(...)` resolved to the bare `'bar'` -> `bar` of the caller's class ( and its supers )
+4. `A::B::C.bar` ( `FirstPartyImport (.. "A"}).B.C.bar` ) -> `bar` of the class `A.B.C`
+
+Example : `mcp_oauth_authorizations_controller.rb:26` `create`, 9 -> 237 reachable calls, both its sinks reached. A quick win, predicates only ( ~30 lines, a fixture per edge ) : measured 4 -> 37 handlers reaching sqli on the same kb, 0 timeouts. It is what gets Discourse items past call 0.
+Then, still predicates : Ruby sinks `redirect_to` ( open redirect ) and `FinalDestination` / `Net::HTTP` / `Net::SMTP` ( SSRF ), so #4 reaches the LLM with two checked sinks. Then `vcall` as a call ( parsers ), skip `ApplicationController` ( predicates ), ActiveRecord raw SQL ( predicates ).
+
+### done: Rails user input and its dataflow ( [#152](https://github.com/OrenGitHub/dhscanner.runner/issues/152), parsers 1.1.55 + codegen 1.0.46 + predicates v1.5.0 + queryengine 1.0.82 )
+
+User input first : a Rails handler's only input was the handler itself ( `RequestObjectCtor` ), with no dataflow out of it, so no Ruby item could ever show a flow. Now **a `params` call in a method of a class whose super chain reaches `ActionController::Base` is user input** ( structural, no names or paths ). What it took :
+
+| layer | fix |
+|---|---|
+| parsers | `params` ( a `vcall` ) is a call, was a variable ; a hash is `[dictify]` of `[kv](key, value)`, was the int placeholder 9999 that dropped every key and value ; a class / module / aref super keeps its whole constant path ( `Admin.UsersController`, was `UsersController` ) ; a def-less class gets a `[class]` marker method, so it is in the kb |
+| fronts rb + worker | a qualified class ( `Admin::StaffController` ) binds to its file, was `Admin` bound to one of the many files that open `module Admin` |
+| codegen | a dotted super with no binding stays unresolved, was its first part ( 92 wrong `Admin` supers ) |
+| predicates v1.5.0 | class method + implicit self call edges, arg -> param dataflow, `endpoints_user_input_rails` |
+| queryengine | `SelectHttpHandlers` lists the `params` calls as `RequestParamCtor` inputs |
+
+Discourse : 309 / 317 controllers reach `ApplicationController` ( was 159 ), 665 handlers with 1,718 `params` inputs, sqli sinks 1,158 -> 1,353. The #152 definition of done is in CI ( `tests/kbapi/discourse_user_input.py` ) :
+
+| | action | control flow to sql | user input | dataflow |
+|---|---|---|---|---|
+| A | `categories_controller.rb:356` `set_notifications` | `DB.build` `category_user.rb:88`, `:125` | `params` :357, :358 | no |
+| B | `tags_controller.rb:438` `update_notifications` | `DB.build` `tag_user.rb:134`, `:174` | `params` :439 | no |
+| C | `admin/users_controller.rb:107` `penalty_history` | `DB.exec` :128 | `params` :142 | **yes**, 6 steps : `params` -> `[:user_id]` -> `.to_i` -> `user_id:` -> `.merge` -> `DB.exec` |
+
+The agent on C ( trace `kb_XXXXXXXX1-27/20261107T191433Z-27687` ) : `suspicious`, "user input flows into a SQL execution call with no detected checks". Two gaps : the path is locations only, so the LLM cannot see the `.to_i` cast that makes it safe ; and `Admin::StaffController`'s `before_action :ensure_staff` is not auth yet, so it called the endpoint unauthenticated. Left : 6 controllers named lexically inside a module ( `module Boards ; class BoardsController < BaseController` ).
 
 ## Discourse: before the first five ( 2026-10-31 ) : Ruby parses 26% of files, 6% of lines
 

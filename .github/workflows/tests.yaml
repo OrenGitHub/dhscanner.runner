@@ -801,5 +801,15 @@ jobs:
           $compose cp tests/prolog/sqli_sinks.pl queryengine:/tmp/sqli_sinks.pl
           $compose exec -T -w /queryengine queryengine swipl /tmp/sqli_sinks.pl -- "${discourse_kb_path}" 1100
 
+      - name: assert Rails user input and dataflow on 3 Discourse actions
+        run: |
+          # #152 : a `params` call in a method of a subclass of
+          # ActionController::Base is user input. A + B : control flow to
+          # the sql sinks, user input, no dataflow ; C ( Admin::UsersController
+          # #penalty_history ) : params[:user_id].to_i flows into DB.exec.
+          compose="docker compose             -f ./compose/compose.base.yaml             -f ./compose/compose.app.yaml             -f ./compose/compose.fronts.yaml             -f ./compose/compose.prebuilt.yaml             -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${discourse_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/discourse_user_input.py
+
       - name: remove Discourse tested code
         run: rm -rf discourse-src discourse_scan.log
