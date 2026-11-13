@@ -36,6 +36,7 @@ import typing
 import pydantic
 
 from agent.loop.kbapi import KbapiClient, KbapiError
+from agent.loop.ledger import DataflowLedger, LocationKey, first_location, location_key
 from agent.loop.types import (
     EndpointRef,
     HistoryEntry,
@@ -321,6 +322,7 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
     wall_clock_seconds: float = DEFAULT_WALL_CLOCK_SECONDS,
     openai_timeout_seconds: float = DEFAULT_OPENAI_TIMEOUT_SECONDS,
     trace_hook: typing.Optional[SessionTraceHook] = None,
+    ledger: typing.Optional[DataflowLedger] = None,
 ) -> SessionResult:
     """Run exactly one fresh LLM session on exactly one endpoint.
 
@@ -350,7 +352,7 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
         kbapi_budget=kbapi_query_budget,
         enqueue_budget=enqueue_budget,
     )
-    user = _build_user_prompt(endpoint, history, digest_snapshot)
+    user = _build_user_prompt(endpoint, history, digest_snapshot, ledger)
     messages: list[dict[str, typing.Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -359,6 +361,14 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
     kb_queries: list[dict[str, typing.Any]] = []
     kb_responses: list[dict[str, typing.Any]] = []
     budget_used = 0
+    # Trace index of the next kbapi call ( a ledger hit is traced too, but
+    # costs no budget, so the two counters part ).
+    call_seq = 0
+    # Every location the session has seen, by ( file, colStart, colEnd ),
+    # to undo a retyped line in a query ( see _snap_locations ).
+    known_locations: dict[LocationKey, dict[str, typing.Any]] = {}
+    _collect_locations(endpoint.model_dump(), known_locations)
+    _collect_locations([rec.model_dump(mode="json") for rec in history], known_locations)
 
     response_format = _llm_response_format()
     tool_schema = _kbapi_tool_schema(_ALLOWED_TAGS)
@@ -523,16 +533,26 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
                 })
                 continue
 
+            contents = _snap_locations(contents, known_locations)
             query_payload = {"tag": tag, "contents": contents}
-            call_index = budget_used + 1
-            hook.kbapi_call(call_index, query_payload)
+            call_seq += 1
+            hook.kbapi_call(call_seq, query_payload)
             kb_queries.append(query_payload)
-            try:
-                reply = kbapi_client.query(tag, contents)
-            except KbapiError as exc:
-                reply = {"tag": "KbapiError", "contents": {"error": str(exc)}}
-            budget_used += 1
-            hook.kbapi_reply(call_index, reply)
+            cached = ledger.cached_reply(tag, contents) if ledger is not None else None
+            if cached is not None:
+                # Asked before ( this session or an earlier one ) : the
+                # ledger answers, no budget spent.
+                reply = {**cached, "fromLedger": True}
+            else:
+                try:
+                    reply = kbapi_client.query(tag, contents)
+                except KbapiError as exc:
+                    reply = {"tag": "KbapiError", "contents": {"error": str(exc)}}
+                budget_used += 1
+                if ledger is not None:
+                    ledger.observe(tag, contents, reply)
+            _collect_locations(reply, known_locations)
+            hook.kbapi_reply(call_seq, reply)
             kb_responses.append(reply)
             messages.append({
                 "role": "tool",
@@ -548,6 +568,46 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
             "re-enqueue at back."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Locations the model retypes.
+#
+# A query names its `from` / `to` by a kb location, and the model copies
+# it by hand from an earlier reply. It gets lines wrong : a sink at lines
+# 94-99 came back as `lineStart: 99` ( Chatwoot instagram callbacks ), and
+# the dataflow query missed a path the kb has. A kb column is an offset
+# from the start of the file, so ( filename, colStart, colEnd ) pins a
+# location by itself : a query location with a known file and columns
+# gets the known lines back.
+# ---------------------------------------------------------------------------
+
+
+def _collect_locations(
+    node: typing.Any, known: dict[LocationKey, dict[str, typing.Any]]
+) -> None:
+    if isinstance(node, dict):
+        loc = first_location(node) if location_key(node) is not None else None
+        if loc is not None:
+            known.setdefault(typing.cast(LocationKey, location_key(node)), loc)
+        for value in node.values():
+            _collect_locations(value, known)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_locations(value, known)
+
+
+def _snap_locations(
+    node: typing.Any, known: dict[LocationKey, dict[str, typing.Any]]
+) -> typing.Any:
+    if isinstance(node, list):
+        return [_snap_locations(value, known) for value in node]
+    if not isinstance(node, dict):
+        return node
+    key = location_key(node)
+    if key is not None and key in known:
+        return {**node, **known[key]}
+    return {k: _snap_locations(v, known) for k, v in node.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +638,7 @@ def run_zero_sinks_check(
     endpoint: EndpointRef,
     kbapi_client: KbapiClient,
     trace_hook: typing.Optional[SessionTraceHook] = None,
+    ledger: typing.Optional[DataflowLedger] = None,
 ) -> typing.Optional[SessionResult]:
     """A ``safe`` verdict when no tracked sink is control-flow reachable
     from the handler, else ``None`` ( a sink, or a kbapi failure ) and
@@ -598,6 +659,8 @@ def run_zero_sinks_check(
     except KbapiError as exc:
         reply = {"tag": "KbapiError", "contents": {"error": str(exc)}}
     hook.kbapi_reply(0, reply)
+    if ledger is not None:
+        ledger.observe(tag, contents, reply)
 
     found = reply.get("contents") or {}
     if reply.get("tag") != "FoundControlFlowReachableSinks" or found.get("total") != 0:
@@ -758,6 +821,7 @@ def _build_user_prompt(
     endpoint: EndpointRef,
     history: list[HistoryEntry],
     digest_snapshot: ScanDigestSnapshot,
+    ledger: typing.Optional[DataflowLedger] = None,
 ) -> str:
     history_shown = history[-_MAX_HISTORY_SHOWN:]
     older_count = max(0, len(history) - _MAX_HISTORY_SHOWN)
@@ -790,6 +854,10 @@ def _build_user_prompt(
             "## History for THIS endpoint\n"
             "None. This is the first time anyone looked at this endpoint."
         )
+
+    pairs = ledger.prompt_section() if ledger is not None else None
+    if pairs is not None:
+        sections.append(pairs)
 
     sections.append(
         "## ScanDigest counts snapshot (frozen; you cannot mutate)\n"

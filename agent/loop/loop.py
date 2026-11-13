@@ -31,8 +31,9 @@ import typing
 from agent.loop.digest import ScanDigest
 from agent.loop.findings import FindingsStore
 from agent.loop.kbapi import KbapiClient
+from agent.loop.ledger import DataflowLedger
 from agent.loop.queue import TwoLaneDeque
-from agent.loop.seeder import seed_initial_queue
+from agent.loop.seeder import seed_initial_queue, select_endpoints
 from agent.loop.session import (
     DEFAULT_ENQUEUE_BUDGET,
     DEFAULT_KBAPI_QUERY_BUDGET,
@@ -80,6 +81,12 @@ class ScanConfig:
     max_wall_clock_s: typing.Optional[float] = None
     # Initial queue order: lexicographic ( comparable runs ) or random.
     random_order: bool = False
+    # Seed only these endpoints, in this order ( ``<filename>:<line>`` of
+    # the handler ). ``None`` -> the whole seeded surface.
+    endpoints: typing.Optional[tuple[str, ...]] = None
+    # An `inconclusive` endpoint with untried input x sink pairs goes back
+    # on the queue, up to this many sessions on it ( agent/loop/ledger.py ).
+    max_sessions_per_endpoint: int = 10
     # Where the ScanTrace lands. ``None`` -> default under
     # ``agent/.scan_traces/<kb-basename>/<timestamp>/``.
     trace_root: typing.Optional[pathlib.Path] = None
@@ -134,6 +141,7 @@ def run_scan(config: ScanConfig) -> ScanResult:  # pylint: disable=too-many-loca
             trace=trace,
             kbapi=kbapi,
             random_order=config.random_order,
+            endpoints=config.endpoints,
         )
         return _drive(
             queue=queue,
@@ -152,18 +160,21 @@ def run_scan(config: ScanConfig) -> ScanResult:  # pylint: disable=too-many-loca
 # ---------------------------------------------------------------------------
 
 
-def _seed(
+def _seed(  # pylint: disable=too-many-arguments
     *,
     queue: TwoLaneDeque,
     digest: ScanDigest,
     trace: ScanTrace,
     kbapi: KbapiClient,
     random_order: bool,
+    endpoints: typing.Optional[tuple[str, ...]] = None,
 ) -> None:
     # ``findings`` is intentionally absent here: seed-time entries live
     # on the queue + digest only; the per-endpoint history is populated
     # by the first fresh session on each endpoint (\u00a74.6 ritual).
     seeded = seed_initial_queue(kbapi, random_order=random_order)
+    if endpoints is not None:
+        seeded = select_endpoints(seeded, endpoints)
     for ref in seeded:
         queue.push_back(ref)
     digest.bootstrap_from_seed(seeded)
@@ -215,12 +226,17 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
         trace.digest_snapshot(item_id, snapshot)
 
         history = findings.get(endpoint)
+        ledger = findings.ledger(endpoint)
         hook = _TraceHook(trace, item_id)
-        session_result = run_zero_sinks_check(
-            endpoint=endpoint,
-            kbapi_client=kbapi,
-            trace_hook=hook,
-        )
+        session_result = None
+        if not ledger.has_sinks():
+            # a re-popped endpoint has its sinks in the ledger already
+            session_result = run_zero_sinks_check(
+                endpoint=endpoint,
+                kbapi_client=kbapi,
+                trace_hook=hook,
+                ledger=ledger,
+            )
         if session_result is None:
             session_result = run_item_session(
                 endpoint=endpoint,
@@ -233,6 +249,7 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
                 wall_clock_seconds=config.wall_clock_per_session_s,
                 openai_timeout_seconds=config.openai_timeout_s,
                 trace_hook=hook,
+                ledger=ledger,
             )
             trace.llm_verdict(item_id, session_result.response)
         else:
@@ -259,6 +276,14 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
         # a pop-and-retry would be silently swallowed as a duplicate.
         if session_result.forced_inconclusive:
             queue.requeue_back(endpoint)
+        elif _search_goes_on(session_result, ledger, len(findings.get(endpoint)), config):
+            # The model could not settle it, and pairs are left : another
+            # session picks up where this one stopped ( the ledger ).
+            _log.info(
+                "requeue %s : %d untried dataflow pairs",
+                endpoint.endpoint_id, len(ledger.untried_pairs()),
+            )
+            queue.requeue_back(endpoint)
 
     trace.scan_completed(
         items_processed=item_id,
@@ -270,6 +295,20 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
         trace_root=trace.root,
         verdict_counts=verdict_counts,
         zero_sinks=zero_sinks,
+    )
+
+
+def _search_goes_on(
+    result: SessionResult,
+    ledger: DataflowLedger,
+    sessions_so_far: int,
+    config: ScanConfig,
+) -> bool:
+    return (
+        result.response.verdict is Verdict.INCONCLUSIVE
+        and not result.zero_sinks
+        and bool(ledger.untried_pairs())
+        and sessions_so_far < config.max_sessions_per_endpoint
     )
 
 
