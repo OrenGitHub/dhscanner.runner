@@ -43,13 +43,30 @@ Static analysis involves many queries that traverse transitive closures, which c
 a long time to resolve. From very early on it was clear that meaningful prioritization is
 only possible if every query respects a configurable upper time bound.
 
-## Current phase ( July - October 2026 )
+## Current phase ( November 2026 - ) : real source to sink dataflows in real code bases
 
 We implemented our approach and started scanning open-source applications.
 We found a new code vulnerability in a highly starred TypeScript repo
 ( [formbricks][3] ) acknowledged by the maintainers, and [fixed upstream][4].
-In the coming months, we want to prove *general applicability* of the paradigm
+Next we want to prove *general applicability* of the paradigm
 on *more* real-world applications listed on [HackerOne bug bounty programs][5].
+
+**The target : a real dataflow, from user input to a real sink, in real code.**
+Not a sink that is merely reachable, not a fact in isolation. A path dhscanner
+reports end to end : an endpoint's user input ( eg a Rails `params` read ),
+through the code, into a sink ( a redirect, an http request, a query, a file ).
+Picking one is source first : read the code, find the shortest such flow, and
+leave the sanitizer aside ; it can be as complicated as it likes.
+
+Every such dataflow is a win, whatever the verdict :
+
+- **dhscanner flags it, and it is not a vulnerability** : a false positive with
+  actual code from the wild. It goes into our benchmark.
+- **dhscanner flags it, and it is a vulnerability** : a new finding in a real
+  application. We disclose it to the maintainers, and it goes into a CFP for BSides.
+- **dhscanner misses the dataflow** : the kb fact that broke the path ( a parser
+  gap, a missing user input, a missing call edge, dataflow through an instance
+  variable ) is the next fix.
 
 ---
 

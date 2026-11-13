@@ -1,6 +1,6 @@
 # status
 
-Last updated: 2026-11-07
+Last updated: 2026-11-13
 
 ## the user flow under test
 
@@ -41,6 +41,163 @@ Progress comes from doing "fives" across many repos ( other languages, framework
    - kb missed it ( eg a safe open redirect ) -> a kb / parser issue, not an agent fault.
    - kb has it, the agent misjudged it ( eg missed the sanitizer ) -> an agent issue.
 6. **Write down the ONE most important thing to improve**, with the endpoint and source lines, and whether it is a quick win.
+
+## Chatwoot: the first real dataflow, an FP ( 2026-11-13 ) : instagram/callbacks#show, #156
+
+The goal changed ( `docs/GOAL.md`, current phase ) : a real user input -> sink dataflow in real code. Picked source first, the shortest flows : `instagram/callbacks#show`, `tiktok/callbacks#show`, `twitter/callbacks#show`.
+
+- **instagram** : `params[:error]` ( `:81` ) -> `error_info` hash -> `redirect_to_error_page(error_info)` -> `redirect_to app_new_instagram_inbox_url( error_type: .. )` ( `:94` ). Found end to end, verdict `suspicious`, and it is **safe** ( a Rails named route : fixed host, the value is an encoded query param ) : a false positive from the wild, #156.
+- **tiktok** : blocked, the parsers drop `class << self` bodies ( `Tiktok::AuthClient` ), and Ruby kwargs bind arg i -> param i only.
+- **twitter** : blocked, the flow goes through the `@account ||=` ivar.
+
+What it took, three fixes :
+
+1. **Ruby sinks** ( predicates v1.6.0 ) : `redirect_to` ( open redirect ) and `HTTParty` / `RestClient` / `Faraday` / `Net::HTTP` / `OAuth2` ( ssrf ). queryengine 1.0.82 had none, all 3 were 0 sinks.
+2. **Handler inputs** ( predicates v1.6.0, queryengine template ) : a rails action's user inputs are the `params` calls of the action **and of the methods it reaches** within 10 hops. Instagram reads `params[:error]` in a private helper, so its only input was `:8`, which flows nowhere.
+3. **Agent loop : a dataflow ledger** ( `agent/loop/ledger.py` ). Instagram now has 7 inputs x 4 sinks = 28 pairs, and a session affords 6 queries. The outer loop keeps, per endpoint and across sessions, the inputs, the sinks, every pair asked with its result and every reply : the prompt lists the tried and the untried pairs with exact locations, a repeated query costs no budget, and an `inconclusive` endpoint is requeued while untried pairs remain ( `--max-sessions-per-endpoint`, default 10 ). Also : `--endpoints FILE:LINE` scans only those handlers, and a query location whose ( file, colStart, colEnd ) the loop knows gets its lines snapped back ( the LLM wrote `lineStart 99` for a sink at `94-99` ).
+
+Run ( trace `agent/.scan_traces/kb_XXXXXXXX1-1/20261113T092433Z-79343` ) : one session, 5 queries, `:81` -> `:94` and `:83` -> `:94` both PATH FOUND ( 12 nodes ), 0 sanitizers, `suspicious`. The session before the ledger tried only `:8`, `inconclusive`.
+
+### the most important thing to improve
+
+**A Rails named route helper is an open redirect sanitizer** ( #156 ) : `redirect_to <name>_url( .. )` without `host:` keeps the host. Needs a kb fact for the `as:` names of `config/routes.rb`, no string parsing of the callee name.
+
+## Chatwoot: random 5, source first, prebuilt parsers 1.1.55 + codegen 1.0.46 + queryengine 1.0.82 ( 2026-11-09 ) : 5 safe, 0 sinks, 0 LLM
+
+New Ruby target : Chatwoot ( Rails, 3,076 `.rb` files, 1,900 outside `spec/` ). The cli collected 3,434 files ( all languages ), kb `/tmp/kb_XXXXXXXX1-7.pl` in ~10 min ( upload 1 m, parsing 2.5 m, codegen 1 m, kbgen 5 m ).
+**533 endpoints seeded**, the #152 Rails recognizer works out of the box. Trace `agent/.scan_traces/kb_XXXXXXXX1-7/20261109T200652Z-66250` : 5 safe, all 0 sinks at call 0, no LLM.
+
+| # | endpoint | source | sinks in source | kb |
+|---|---|---|---|---|
+| 1 | `contacts/notes#create` ( `notes_controller.rb:10` ) | `@contact.notes.create!(note_params)`, strong params | ActiveRecord ( bound ) | user input = whole handler : `params` is in the private `note_params` ( `:30` ) |
+| 2 | `whatsapp/manual_setup#setup_webhook` ( `manual_setup_controller.rb:26` ) | `Whatsapp::WebhookSetupService.new(channel).perform` | **`HTTParty.get / post`** to `graph.facebook.com` ( `facebook_api_client.rb:12-113` ), ids from the stored channel config : SSRF family, safe | 0 sinks |
+| 3 | `captain/inboxes#index` ( `inboxes_controller.rb:5` ) | `@assistant.inboxes` | none | ok |
+| 4 | `monitors#update` ( `monitors_controller.rb:46` ) | strong params, `join_slack_channel!` ( Slack gem ), `ConversationMonitors::Update` | Slack API ( 3rd party client ) | `params[:collection_version]` ( `:48` ) is a `RequestParamCtor` with name `""` |
+| 5 | `assignment_policies#index` ( `assignment_policies_controller.rb:9` ) | `Current.account.assignment_policies` | none | ok |
+
+All 5 are safe, so the verdicts are correct. But the agent never ran, because the kb has **no Ruby sink outside Discourse's `mini_sql`** : `predicates/sinks/` holds only `db/ruby/mini_sql.pl` and `deser/ruby/native.pl` for Ruby.
+Sites in Chatwoot ( `app lib enterprise`, no `spec` ) : `HTTParty.<verb>` 96, `Faraday` / `RestClient` 42, `Net::HTTP` 5, `redirect_to` 95, `File.read / open / write / delete` 18, raw SQL ( `find_by_sql / execute / exec_query / select_all` ) 18.
+
+Also seen :
+
+- **auth** : 533 / 533 endpoints are `unauth`, yet `Api::BaseController` has `before_action :authenticate_user!` ( `api/base_controller.rb:8` ). `before_action` auth is not modelled ( same gap as Discourse `ensure_staff` ).
+- user input is the whole handler on 4 / 5, because Chatwoot reads `params` in private `*_params` helpers, not in the action.
+
+### the most important thing to improve
+
+**Ruby has no HTTP / SSRF sink catalog.** Endpoint # 2 reaches `HTTParty.get / post` in 2 hops ( `setup_webhook` -> `WebhookSetupService#perform` -> `FacebookApiClient` ), and the kb reports 0 sinks. It is a safe sink ( a fixed host ), and that is exactly the kind of fact the agent should see.
+**Quick win : likely** : `predicates/sinks/ssrf/ruby/` for `HTTParty`, `Net::HTTP`, `Faraday`, like `ssrf/python/native.pl`. First check how the kb names `HTTParty.get` ( a 3rd party constant receiver ) and that the call edge from `setup_webhook` is there ; not checked yet.
+Next : `before_action` auth ( 533 / 533 `unauth` ), then Ruby `redirect_to` and files.
+
+## LinkStack: first five, source first, prebuilt parsers 1.1.55 + codegen 1.0.46 + queryengine 1.0.82 ( 2026-11-08 ) : 0 endpoints
+
+New target, after parking Concrete ( too indirect a router for a first PHP target ) : LinkStack `931ce77` ( PHP 8, Laravel 9.52, 60 files / 5.1k lines in `app/` ).
+Fresh kb `/tmp/kb_XXXXXXXX1-4.pl` ( 10 MB, 560 files, 51 s ), trace `agent/.scan_traces/kb_XXXXXXXX1-4/20261108T190242Z-16203` : **0 items**, no Laravel recognizer.
+
+**Parsing : 129 / 130 `.php` files ( 99.2% ), 99.9% of lines** ( Blade templates excluded ). The one failure is an anonymous class `new class extends Migration` in a migration.
+
+Laravel is the direct case : routes are `Route::get( url, [ UserController::class, 'm' ] )` in `routes/web.php` ( ~100 ), `auth.php`, `home.php`, loaded by `app/Providers/RouteServiceProvider.php:46-48`.
+Controllers end in a 3rd party base ( `app/Http/Controllers/Controller.php` : `extends Illuminate\Routing\Controller` ), auth is the enclosing `Route::middleware( [ 'auth', ... ] )->group(...)` ( `web.php:94`, admin `:149-152` ), user input is the injected `Request $request` method parameter.
+
+The five ( `random.sample( seed 20261108 )` over the 120 `Route::get / post / ...` lines ) :
+
+| # | endpoint | auth | source | verdict |
+|---|---|---|---|---|
+| 1 | `GET /pages/contact` -> `AdminController::pagesContact` ( `AdminController.php:531` ) | none | `Page::select("contact")->first()`, a constant column, then a view | safe, no input |
+| 2 | `POST /studio/theme` -> `UserController::editTheme` ( `UserController.php:747` ) | `auth` group | `$request->theme` is stored **unchecked** in `users.theme` ( `:757-760` ) ; a zip upload is extracted into `themes/` for admins only ( `:764-774` ) | **suspicious, stored** : the public profile page ( # 5 ) builds `include base_path('themes/' . $theme . '/config.php')` from it ( `resources/views/linkstack/modules/theme.blade.php:6-8`, `:25` ). A path traversal into `include`, limited to a file named `config.php` |
+| 3 | `POST /options` -> `InstallerController::options` ( `InstallerController.php:128` ) | none, only registered while `INSTALLING` / `INSTALLERLOCK` exists ( `web.php:33` ) | `EnvEditor::editKey('APP_NAME', '"' . $request->app . '"')` ( `:146` ) writes user input into `.env` | install time only, by design ; a `"` / newline injection into `.env` |
+| 4 | `GET /auth-as/{id}` -> `AdminController::authAsID` ( `AdminController.php:908` ) | `auth` + `admin` groups | route `id` -> `$user->auth_as = $userID; $user->save()` ( Eloquent ) | safe ; a state change on `GET` ( no csrf ), admin only |
+| 5 | `GET /@{littlelink}` -> `UserController::littlelink` ( `UserController.php:85` ) | none ( public profile ) | `$request->littlelink` -> `User::select(...)->where('littlelink_name', ...)` ( Eloquent, bound ) | safe in itself ; renders # 2's stored theme into the `include` |
+
+The kb has the route calls, the methods and their bodies. What breaks :
+
+| layer | what is missing | evidence |
+|---|---|---|
+| parsers | **every PHP method loses its parameters** : `Ast.stmtMethodParams = []` ( `PhpParser.y:962` ), although the rule parses them ( `'params' ':' params`, `:952` ) and functions keep theirs ( `stmtFuncParams = $15`, `:370` ). So `littlelink(request $request)` has no param fact, and `$request` in `$request->littlelink` ( `UserController.php:88` ) is a dataflow root with no incoming edge | 123 `kb_param_has_name` facts for 209 methods + the functions, all of them on functions |
+| parsers | **every PHP method has no class supers** : `hostingClassSupers = []` ( `PhpParser.y:966` ), `methodify` ( `:2424` ) copies only the class name. Codegen reads supers per method ( `CodeGen.hs:1249` ), so no PHP class has a super fact ( Concrete too ) | Java : `JavaParserActions.hs:137` |
+| kb | static calls lose their class : `Route::get(...)` -> `Unknown.get`, `User::select(...)` -> `Unknown.select` | 71 `Unknown.get` in `routes/web.php` |
+| kb | `UserController::class` ( the handler class in the route array ) has no fact, only its `kb_arg_i_for_call` slot | `startloc_76_31_endloc_76_51_routes_slash_web_dot_php` |
+| queryengine | no Laravel recognizer ( routes, `auth` groups, `Request` user input ) | `endpoints/api.pl` |
+
+### the most important thing to improve
+
+**PHP methods lose their parameters ( and their class supers ) in the parser.** In Laravel the user input *is* a method parameter ( `Request $request` ), and a handler is a method of a class whose super chain ends in `Illuminate\Routing\Controller`.
+Without these two, no recognizer can say "user input" or "controller" on any PHP framework ( Concrete included ).
+
+**Quick win : yes**, both in `PhpParser.y` : `Ast.stmtMethodParams = $20`, and `methodify` copies the class supers into each method like `JavaParserActions.hs:137`. Then the strict-progress gate ( 0 new conflicts ), a parsers release, a fresh kb.
+Next : the facade class on static calls ( `Route::get` -> `Illuminate.Support.Facades.Route.get` through the `use` ), a fact for `X::class`, then `endpoints/php/laravel.pl`.
+
+## Concrete CMS: first five, source first, prebuilt parsers 1.1.55 + codegen 1.0.46 + queryengine 1.0.82 ( 2026-11-08 ) : 0 endpoints
+
+New target : Concrete CMS `72f0bf3760` ( PHP, 9.5.x ), a first PHP effort.
+Fresh kb `/tmp/kb_XXXXXXXX1-1.pl` ( 181 MB, 9,035 files collected, 18 m 30 s ), trace `agent/.scan_traces/kb_XXXXXXXX1-1/20261108T165001Z-55906`.
+
+```
+items processed    : 0
+queue remaining    : 0
+```
+
+The loop drained with 0 items, like the first Weblate effort : queryengine has no PHP handler recognizer ( `predicates/endpoints/` : golang, java, nodejs, python, ruby ), and the only PHP sink is `sinks/db/php/yii.pl`.
+So the teacher sampled the 5 endpoints : `random.sample( seed 20261108 )` over the 590 `$router->all / get / post / put / delete( url, 'Class::method' )` lines in `concrete/routes/`.
+
+### parsing coverage
+
+**5,360 / 5,758 `.php` files parse ( 93.1% ), 82.2% of lines** ( `vendor/`, `test(s)/`, `*Test.php` excluded, frontphp -> parsers per file ).
+The first node each of the 398 failing files trips on :
+
+| construct | files | example |
+|---|---|---|
+| attributes `#[...]` ( `attrGroups` > `AttributeGroup`, mostly `#[\ReturnTypeWillChange]` ) | 172 | `concrete/blocks/accordion/controller.php` |
+| a method / variable named `expr` ( `$qb->expr()`, `$expr` : a keyword of the native ast lexer ) | 48 | `concrete/attributes/address/controller.php` |
+| `yield` | 35 | `concrete/blocks/core_conversation/controller.php` |
+| interface `extends` a `Name_FullyQualified` | 34 | `src/Announcement/Announcement/AnnouncementInterface.php` |
+| a method / variable named `alias` ( same ) | ~30 | `controllers/backend/block/process.php` |
+| `finally` | 24 | `concrete/blocks/form/controller.php` |
+| `Class::{name}` / `static::class` ( `class: Name > name: Identifier` ) | 18 | `authentication/concrete/controller.php` |
+
+Parsing is not what blocks this target, but one failure hits a sampled endpoint : `controllers/panel/add.php` ( the parent of endpoint 4, 0 facts ) stops at `$queryBuilder->expr()` ( `add.php:100` ), the `expr` bucket.
+
+### the five, source first
+
+All five are login + permission gated dialogs / panels, read only, and safe. Routing : `src/Routing/SystemRouteList.php` gives each routes file a prefix + namespace ( `->buildGroup()->setNamespace()->setPrefix()->routes('dialogs/pages.php')` ).
+The access check is `Backend\UserInterface::shouldRunControllerTask() -> canAccess()` ( `controllers/backend/user_interface.php` ), and every `submit` adds a CSRF token in `validateAction()`.
+
+| # | endpoint | handler | reachable sinks | auth | kb |
+|---|---|---|---|---|---|
+| 1 | `/ccm/system/dialogs/page/edit_alias` | `Dialog\Page\EditAlias::view` | `Page::getByID( cID )` in `on_start` ( `user_interface/page.php:23` ) | `canEditPageProperties() && isAliasPage()` | 3 methods, super missing |
+| 2 | `/ccm/system/panels/details/page/composer` | `Panel\Detail\Page\Composer::view` | none ( `PageType::getByID` of the page's own type id ) | `canEditPageContents()` | 7 methods, super missing |
+| 3 | `/ccm/system/dialogs/file/upload_complete` | `Dialog\File\UploadComplete::view` | `File::getByID( fID )` per requested id ( `bulk/properties.php` `populateFiles` ) | `canAccessFileManager()` + `canViewFileInFileManager()` per file | 2 methods, super missing |
+| 4 | `/ccm/system/dialogs/page/add_block_list` | `Dialog\Page\AddBlockList::view`, **inherited** from `Panel\Add::view` | a query builder sql sink, `$db->quote( $orphanedArea )` ( `panel/add.php` `getOrphanedBlockIds` ) : the handles come from the `Areas` table, not from the request `usedAreas`, and are quoted anyway | `canEditPageContents()` | `add.php` not in the kb ( parse fail ) |
+| 5 | `/ccm/system/dialogs/user/attributes/{uID}` | `Dialog\User\Attributes::view` | `UserInfoRepository::getByID( uID )` | `canEditUser()` + the `edit_user_properties` assignment | 8 methods, super missing |
+
+### diff against the kb
+
+The methods, their calls and the route registrations are all in the kb. What is missing is how they connect :
+
+| layer | what is missing | evidence |
+|---|---|---|
+| queryengine | no PHP / Concrete handler recognizer | `endpoints/api.pl` |
+| kb | **0 super facts for any PHP class** ( no `kb_class_has_1st_party_super` / `3rd_party_super` in the whole kb ) | first cause ( found on LinkStack, above ) : every PHP method gets `hostingClassSupers = []` ( `PhpParser.y:966` ) and `methodify` ( `:2424` ) copies only the class name, while codegen reads the supers per method ( `CodeGen.hs:1249` ; Java copies them, `JavaParserActions.hs:137` ). Then : `PhpParser.y:779-781` `use_item` keeps the full name `Concrete\Controller\Backend\UserInterface\Page` and drops the alias ( `$12` ); `CodeGen.hs:349` binds the import under that full name, so `extends BackendInterfacePageController` ( or a plain `extends Page` ) never matches it |
+| kb | 60% of all calls are `Unknown.*` ( 73,857 / 124,039 ), same-class calls too : `$this->getUserFromRequest()` -> `Unknown.getUserFromRequest` ( `dialog/user/attributes.php` ), static calls lose their class : `ConcretePage::getByID( $cID )` -> `Unknown.getByID`, `new EditResponse()` -> `Unknown.__construct` | `kb_call_resolved` |
+| kb | class defs have no namespace : `kb_class_def( ..., 'EditAlias', 'concrete/controllers/dialog/page/edit_alias.php' )` ; `namespace X;` is lowered to a plain block ( `PhpParser.y:629` ). Short names collide ( `Attributes`, `Properties`, `Add` ... ) | |
+| kb | a route is a call `Unknown.all` with two string args : `kb_const_string( ..., '/edit_alias' )`, `kb_const_string( ..., 'EditAlias::view' )`. The `Class::method` target only exists inside a string atom | `routes/dialogs/pages.php:55` |
+| kb | `$this->request->request->get( 'x' )` ( Symfony `Request` ) is the user input idiom, `Unknown.request.request.get` | `dialog/page/edit_alias.php:24` |
+
+### the most important thing to improve
+
+**A Concrete route recognizer, and the kb facts it needs.** With 0 handlers nothing reaches the agent, and every other gap only matters after this one.
+The routes are already in the kb, so this is a kb + queryengine job, not a parser coverage one :
+
+1. kbgen / codegen : a structured fact for a `'Class::method'` callable string ( the class part resolved like a `use`d name, the method part as a name ). The predicates must not split the atom ( no string parsing of kb atoms, `predicates/AGENTS.md` ).
+2. parsers + kb : namespaced class names ( `Concrete\Controller\Dialog\Page\EditAlias` ), so a route target resolves to one class.
+3. queryengine : `endpoints/php/concrete.pl` = calls `all / get / post / put / delete` in a file under `routes/`, url = arg 0, handler = arg 1, prefix + namespace from the `SystemRouteList` group ( the url is the group prefix + arg 0 ).
+
+**Not a quick win**, because of (1) and (2). **The quick win right next to it** is the PHP `use` binding : keep the alias in `use_item` and bind an unaliased `use A\B\C;` under its last part `C`.
+It turns on supers, then the inherited handlers ( endpoint 4's `view` lives in `Panel\Add` ), and `Backend\UserInterface::canAccess()` as the one auth gate of every dialog. Also :
+
+- parsers : `#[...]` attributes ( 172 files ) and the `expr` / `alias` names ( ~78 files, `Panel\Add` among them ) are the next coverage steps.
+- [#111](https://github.com/OrenGitHub/dhscanner.runner/issues/111) again : one `invalid status response` poll during kbgen.
+- 0 handlers still drains silently : the loop should say "0 handlers seeded" and exit non-zero.
 
 ## Discourse: random 10, source first, prebuilt parsers 1.1.54 + queryengine 1.0.81 ( 2026-11-07 ) : 10 safe, 0 sinks, 0 LLM
 
