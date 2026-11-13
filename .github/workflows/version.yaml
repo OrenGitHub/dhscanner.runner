@@ -1,0 +1,62 @@
+name: version
+
+# Every PR bumps the minor of VERSION ( 1.0.0-beta -> 1.1.0-beta ), and its
+# merge publishes that version as a release ( release.yaml ).
+#
+# main only takes PRs ( the "main branch protection" ruleset ), so CI cannot
+# push a bump to main after the merge, the way the services do : the bump is
+# a commit on the PR branch instead. A PR that already changed VERSION by
+# hand ( a major bump, dropping `-beta` ) is left as is.
+#
+# A commit pushed with GITHUB_TOKEN does not trigger workflows, so pylint /
+# mypy / tests keep the results of the commit before the bump ( it only
+# touches VERSION ).
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-${{ github.head_ref }}
+
+jobs:
+  bump:
+    # a fork's token is read only : its maintainer bumps by hand
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout the PR branch
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+        fetch-depth: 0
+
+    - name: bump the minor, unless the PR already changed VERSION
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        HEAD_REF: ${{ github.head_ref }}
+      run: |
+        head=$(tr -d '[:space:]' < VERSION)
+        if ! base=$(git show "origin/$BASE_REF:VERSION" 2>/dev/null); then
+          echo "$BASE_REF has no VERSION yet : the first release is $head"
+          exit 0
+        fi
+        base=$(echo "$base" | tr -d '[:space:]')
+        if [ "$head" != "$base" ]; then
+          echo "VERSION already changed by the PR : $base -> $head"
+          exit 0
+        fi
+        # semver with an optional pre-release suffix : 1.0.0-beta -> 1.1.0-beta
+        core=${base%%-*}
+        suffix=${base#"$core"}
+        IFS=. read -r major minor patch <<< "$core"
+        new="$major.$((minor + 1)).0$suffix"
+        echo "$new" > VERSION
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git commit -am ":arrow_up: Bump version: $base -> $new"
+        git push origin "HEAD:$HEAD_REF"

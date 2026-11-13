@@ -1,0 +1,56 @@
+name: release
+
+# A merged PR publishes VERSION as the GitHub release v<VERSION> ( the PR
+# bumped it, version.yaml ). The notes pin what the release runs : the
+# prebuilt service images and the dhscanner.core commit the fronts build from.
+# A `-beta` ( any pre-release suffix ) is marked as a pre-release.
+#
+# A merge whose VERSION is already released ( two PRs bumped to the same
+# version ) fails here : bump VERSION in a new PR.
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout code
+      uses: actions/checkout@v4
+
+    - name: publish v<VERSION>
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version=$(tr -d '[:space:]' < VERSION)
+        tag="v$version"
+        if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+          echo "::error::$tag is already released : bump VERSION"
+          exit 1
+        fi
+        {
+          echo "## Services"
+          echo
+          echo "prebuilt images ( \`compose/compose.prebuilt.yaml\` ) :"
+          echo
+          grep -o 'orenishdocker/[^[:space:]]*' compose/compose.prebuilt.yaml | sed 's/^/* `/; s/$/`/'
+          echo
+          echo "\`dhscanner.core\` : \`$(git ls-tree HEAD dhscanner.core | awk '{print $3}')\`"
+          echo
+        } > notes.md
+        cat notes.md
+        prerelease=""
+        case "$version" in *-*) prerelease="--prerelease" ;; esac
+        gh release create "$tag" \
+          --target "$GITHUB_SHA" \
+          --title "dhscanner $version" \
+          --notes-file notes.md \
+          --generate-notes \
+          $prerelease
