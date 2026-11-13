@@ -14,6 +14,9 @@ Discipline (\u00a74.6, locked):
 * Keyed by :pyattr:`EndpointRef.endpoint_id` so re-exploration of
   the same endpoint under a different bucket label still hits the
   same history.
+
+Next to the history, one :class:`DataflowLedger` per endpoint : the
+input x sink pairs already asked, and every reply, across sessions.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import collections
 import typing
 
+from agent.loop.ledger import DataflowLedger
 from agent.loop.types import (
     EndpointRef,
     HistoryEntry,
@@ -32,6 +36,15 @@ from agent.loop.types import (
 class FindingsStore:
     def __init__(self) -> None:
         self._store: dict[str, list[HistoryEntry]] = collections.defaultdict(list)
+        self._ledgers: dict[str, DataflowLedger] = {}
+
+    def ledger(self, endpoint: EndpointRef) -> DataflowLedger:
+        """The endpoint's dataflow ledger, created on first use."""
+        found = self._ledgers.get(endpoint.endpoint_id)
+        if found is None:
+            found = DataflowLedger(endpoint.user_inputs)
+            self._ledgers[endpoint.endpoint_id] = found
+        return found
 
     def append_session(self, endpoint: EndpointRef, record: SessionRecord) -> None:
         """Append a new session record. Never overwrites."""

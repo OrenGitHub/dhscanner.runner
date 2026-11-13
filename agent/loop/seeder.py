@@ -69,6 +69,30 @@ def seed_initial_queue(client: KbapiClient, *, random_order: bool = False) -> li
     return list(seen.values())
 
 
+def select_endpoints(seeded: list[EndpointRef], wanted: typing.Sequence[str]) -> list[EndpointRef]:
+    """Keep the seeded endpoints that ``wanted`` names, in ``wanted`` order.
+
+    Each entry of ``wanted`` is ``<filename>:<line>``: the handler's file,
+    as the kb names it ( relative to the scanned root ), and the line its
+    handler starts on ( eg the ruby ``def show`` line ). An entry can
+    match more than one endpoint ( two urls, one handler ); an entry
+    with no match is logged and skipped.
+    """
+    selected: list[EndpointRef] = []
+    for entry in wanted:
+        filename, _, line = entry.rpartition(":")
+        matches = [
+            ref for ref in seeded
+            if ref.handler_location.filename == filename
+            and str(ref.handler_location.lineStart) == line
+            and ref not in selected
+        ]
+        if not matches:
+            _log.warning("no seeded endpoint at %s", entry)
+        selected.extend(matches)
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # internals
 # ---------------------------------------------------------------------------

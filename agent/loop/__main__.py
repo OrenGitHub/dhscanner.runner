@@ -137,6 +137,27 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--endpoints",
+        nargs="+",
+        default=None,
+        metavar="FILE:LINE",
+        help=(
+            "seed only these endpoints, in this order : the handler's file "
+            "( as the kb names it ) and the line it starts on, eg "
+            "app/controllers/tiktok/callbacks_controller.rb:4"
+        ),
+    )
+    parser.add_argument(
+        "--max-sessions-per-endpoint",
+        type=_positive_int,
+        default=10,
+        metavar="N",
+        help=(
+            "an `inconclusive` endpoint with untried input x sink dataflow "
+            "pairs goes back on the queue, up to N sessions on it (default: 10)"
+        ),
+    )
+    parser.add_argument(
         "--max-wall-clock-s",
         type=_positive_float,
         default=None,
@@ -215,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         max_items=args.max_items,
         max_wall_clock_s=args.max_wall_clock_s,
         random_order=args.use_random_endpoints_order,
+        endpoints=tuple(args.endpoints) if args.endpoints else None,
+        max_sessions_per_endpoint=args.max_sessions_per_endpoint,
         trace_root=args.trace_root,
     )
 
