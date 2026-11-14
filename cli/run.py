@@ -270,6 +270,7 @@ def resolve_file_mappings(
 
 JAVA_PACKAGE: typing.Final[re.Pattern[str]] = re.compile(r'^\s*package\s+([\w.]+)\s*;', re.MULTILINE)
 JAVA_IMPORT: typing.Final[re.Pattern[str]] = re.compile(r'^\s*import\s+([\w.]+)\s*;', re.MULTILINE)
+JAVA_CLASS_NAME: typing.Final[re.Pattern[str]] = re.compile(r'\b[A-Z]\w*\b')
 
 def resolve_java_package_mappings(
     scan_dirname: pathlib.Path,
@@ -277,7 +278,9 @@ def resolve_java_package_mappings(
 ) -> dict[str, list[dict[str, str]]]:
     """
     Resolve 1st party java imports via the package declarations.
-    Returns a dict mapping each java file to its imports that are declared in the repo.
+    Returns a dict mapping each java file to its imports that are declared in the repo,
+    plus the classes of its own package that it names ( java needs no import for those,
+    the parsers turn each into an implicit 1st party import ).
     E.g. {"dspace-server-webapp/.../CollectionRestRepository.java": [{
         "from": "org.dspace.eperson.service.GroupService",
         "to": "dspace-api/src/main/java/org/dspace/eperson/service/GroupService.java"
@@ -298,13 +301,30 @@ def resolve_java_package_mappings(
         if package is not None:
             declared.setdefault(f'{package.group(1)}.{f.stem}', f.as_posix())
 
+    # package -> simple class name -> file
+    by_package: dict[str, dict[str, str]] = {}
+    for qualified, declaring in declared.items():
+        package_name, _, name = qualified.rpartition('.')
+        by_package.setdefault(package_name, {})[name] = declaring
+
     result: dict[str, list[dict[str, str]]] = {}
     for f, content in contents.items():
+        imports = JAVA_IMPORT.findall(content)
         mappings = [
             {'from': imported, 'to': declared[imported]}
-            for imported in JAVA_IMPORT.findall(content)
+            for imported in imports
             if imported in declared
         ]
+        # classes of the same package need no import : map the ones the file names
+        package = JAVA_PACKAGE.search(content)
+        if package is not None:
+            imported_names = {imported.rpartition('.')[2] for imported in imports}
+            words = set(JAVA_CLASS_NAME.findall(content))
+            mappings += [
+                {'from': f'{package.group(1)}.{name}', 'to': declaring}
+                for name, declaring in sorted(by_package.get(package.group(1), {}).items())
+                if name != f.stem and name in words and name not in imported_names
+            ]
         if mappings:
             result[f.as_posix()] = mappings
 
