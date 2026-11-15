@@ -850,3 +850,38 @@ jobs:
 
       - name: remove Discourse tested code
         run: rm -rf discourse-src discourse_scan.log
+
+      - name: scan full Huginn repo ( Rails open redirect dataflow )
+        run: |
+          # Agent-mode scan of the full Huginn tree ( Rails 8.1 ), pinned to
+          # the commit #165 was found on. A shallow fetch of that one commit
+          # keeps the clone small.
+          git init -q huginn-src
+          git -C huginn-src fetch -q --depth 1 https://github.com/huginn/huginn.git 639c050b2bf4e14ef9983012af99dfc1dc68b334
+          git -C huginn-src checkout -q FETCH_HEAD
+          python -m cli run --create_knowledge_base_from ./huginn-src --ignore_testing_code true 2>&1 | tee huginn_scan.log
+          kb_path=$(awk -F 'kb filename: ' 'NF>1{print $2}' huginn_scan.log | awk '{print $1}' | tail -n 1)
+          if [ -z "$kb_path" ]; then
+            echo "could not extract kb filename from scan log"
+            exit 1
+          fi
+          echo "huginn_kb_path=$kb_path" >> "$GITHUB_ENV"
+
+      - name: assert Huginn events#show params[:return] -> redirect_to dataflow
+        run: |
+          # #165 : params[:return] :23 -> return_to -> redirect_to :24, in the
+          # rescue of a `format.html do .. end` block. Before parsers 1.1.61
+          # the file did not parse ( the :return symbol ), the rescue body
+          # was dropped and `return_to = params[:return] or raise` lost its
+          # target.
+          compose="docker compose \
+            -f ./compose/compose.base.yaml \
+            -f ./compose/compose.app.yaml \
+            -f ./compose/compose.fronts.yaml \
+            -f ./compose/compose.prebuilt.yaml \
+            -f ./compose/compose.workers.yaml"
+          kb_location=$(basename "${huginn_kb_path}" .pl)
+          $compose exec -T app python - "$kb_location" < tests/kbapi/huginn_events_redirect.py
+
+      - name: remove Huginn tested code
+        run: rm -rf huginn-src huginn_scan.log
