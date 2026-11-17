@@ -21,7 +21,7 @@
 #     docker compose ... up -d --no-deps parsers
 # to recreate the container with the newly-built image.
 #
-# Host-port publication ( `parsers`, `frontjava` ) is scoped to this
+# Host-port publication ( `parsers` and the fronts below ) is scoped to this
 # dev override, not the production prebuilt / vps stacks. It is here so
 # the per-language grammar-coverage loops ( `java_agent_loop.py` et al.
 # in dhscanner.core/dhscanner.service.parsers/ ) can POST source files
@@ -34,6 +34,7 @@
 #     frontjava  5005 -> 5000   (per-language convention: 500x host port)
 #     frontpy    5006 -> 5000   (`py_agent_loop.py`)
 #     frontrb    5007 -> 3000   (`rb_agent_loop.py`)
+#     frontcs    5008 -> 8080   (`cs_agent_loop.py`)
 #
 # If you add host ports for other fronts here ( frontts, frontphp, ... )
 # to drive their loops through this same chain, keep them on 500x so
@@ -60,3 +61,7 @@ services:
   frontrb:
     ports:
       - "5007:3000"
+
+  frontcs:
+    ports:
+      - "5008:8080"
