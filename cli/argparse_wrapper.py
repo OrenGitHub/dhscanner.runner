@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import posixpath
 import typing
 import pathlib
 import argparse
@@ -170,10 +171,18 @@ def valid_external_vps(candidate: str) -> str:
     return candidate
 
 
+def kb_name(kb_location: str) -> str:
+    # The queryengine looks a kb up by its bare filename ( kb_XXXXXXXX1-1 or
+    # kb_XXXXXXXX1-1.pl ) under its own /tmp ; a full path like
+    # /tmp/kb_XXXXXXXX1-1.pl ( what the server reports as kb_location )
+    # silently matched no kb and gave 0 results.
+    return posixpath.basename(kb_location.strip().replace('\\', '/'))
+
+
 def non_empty_kb_filename(kb_filename: str) -> str:
-    if kb_filename.strip() == '':
+    if (name := kb_name(kb_filename)) == '':
         raise argparse.ArgumentTypeError('kb filename cannot be empty')
-    return kb_filename
+    return name
 
 
 def positive_int(raw: str) -> int:

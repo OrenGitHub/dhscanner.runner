@@ -21,6 +21,7 @@ from cli.argparse_wrapper import (
     CliRunArgparse,
     CliManageArgparse,
     CliLaunchLocalAppArgparse,
+    kb_name,
 )
 from agent import launcher as local_app_launcher
 from cli import logger as cli_logger
@@ -833,7 +834,7 @@ def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> No
                             results = get_results(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
                             kb_location = results.get('kb_location')
                             if isinstance(kb_location, str):
-                                logging.info('[ step 6 ] kb filename: %s', kb_location)
+                                logging.info('[ step 6 ] kb filename: %s', kb_name(kb_location))
                                 logging.info('[ step 6 ] copy this filename for agent mode continuation')
                             else:
                                 logging.warning('[ step 6 ] missing kb filename in results: %s', results)

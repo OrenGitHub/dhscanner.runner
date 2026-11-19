@@ -80,7 +80,7 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
         description=(
             "Drive ONE fresh agent-loop session on ONE handpicked endpoint. "
             "Everything you'd see in a full `python -m agent.loop` run, "
-            "except we filter the A\u222aB seed down to a single URL first."
+            "except we filter the A + B seed down to a single URL first."
         ),
     )
     p.add_argument("--kb", default="kb_XXXXXXXX1-2",

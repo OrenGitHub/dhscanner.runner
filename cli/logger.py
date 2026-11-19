@@ -97,6 +97,12 @@ _NOISY_THIRD_PARTY_LOGGERS: typing.Final[tuple[str, ...]] = (
 )
 
 
+def _never_fail_on_encoding(stream: typing.TextIO) -> None:
+    reconfigure = getattr(stream, 'reconfigure', None)
+    if callable(reconfigure):
+        reconfigure(errors='backslashreplace')
+
+
 def configure(level: int = logging.DEBUG) -> None:
     """Install the colorized stdout handler on the root logger.
 
@@ -109,6 +115,9 @@ def configure(level: int = logging.DEBUG) -> None:
     "no-op if root already configured" behavior so re-imports don't stack
     duplicate handlers.
     """
+    # stdout redirected to a file on Windows is cp1252 : an emoji in a log
+    # line raised UnicodeEncodeError inside logging ( `--- Logging error ---` )
+    _never_fail_on_encoding(sys.stdout)
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(_LevelColorFormatter(
         fmt=_DEFAULT_FMT,
