@@ -23,7 +23,10 @@ import requests
 
 
 DEFAULT_URL: typing.Final[str] = "http://localhost:3000/api"
-DEFAULT_TIMEOUT_SECONDS: typing.Final[float] = 30.0
+# Above the queryengine's own 180 s per-query swipl bound ( Swipl.hs ),
+# so a slow query is answered ( or reported by qe ) instead of dropped
+# by the client : the seed query takes ~40 s on a 1.2k-file Java repo.
+DEFAULT_TIMEOUT_SECONDS: typing.Final[float] = 200.0
 
 _log = logging.getLogger(__name__)
 
