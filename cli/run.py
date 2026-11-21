@@ -330,6 +330,87 @@ def resolve_java_package_mappings(
 
     return result
 
+CSHARP_COMMENT: typing.Final[re.Pattern[str]] = re.compile(r'//[^\n]*|/\*.*?\*/', re.DOTALL)
+CSHARP_NAMESPACE: typing.Final[re.Pattern[str]] = re.compile(r'^\s*namespace\s+([\w.]+)', re.MULTILINE)
+CSHARP_USING: typing.Final[re.Pattern[str]] = re.compile(r'^\s*(global\s+)?using\s+([\w.]+)\s*;', re.MULTILINE)
+CSHARP_TYPE: typing.Final[re.Pattern[str]] = re.compile(r'\b(?:class|interface|struct|record|enum)\s+([A-Za-z_]\w*)')
+
+def csharp_enclosing_namespaces(namespace: str) -> list[str]:
+    """ A.B.C -> [ A.B.C, A.B, A ] : C# looks a name up in the enclosing namespaces, nearest first """
+    parts = namespace.split('.')
+    return ['.'.join(parts[:i]) for i in range(len(parts), 0, -1)]
+
+def resolve_csharp_namespace_mappings(
+    scan_dirname: pathlib.Path,
+    files: list[pathlib.Path]
+) -> dict[str, list[dict[str, str]]]:
+    """
+    Resolve the 1st party C# types a file names via the namespace declarations.
+    C# has no per type import : a file sees every type of its own namespace, of the
+    enclosing ones ( A.B.C also sees A.B and A ) and of the namespaces it ( or any file,
+    `global using` ) brings in with `using`. Returns a dict mapping each C# file to the
+    1st party types it names this way, nearest namespace first, the parsers turn each
+    into an implicit 1st party import ( like java same package classes ).
+    E.g. {".../Account/AccountController.cs": [{
+        "from": "App.Areas.Identity.Controllers.IdentityController",
+        "to": "src/App/Areas/Identity/Controllers/IdentityController.cs"
+    }]}
+    Types declared in the file itself are left out ( the file resolves those ).
+    """
+    cs_files = [f for f in files if f.suffix == '.cs']
+    contents: dict[pathlib.Path, str] = {}
+    for f in cs_files:
+        try:
+            contents[f] = CSHARP_COMMENT.sub(' ', (scan_dirname / f).read_text(encoding='utf-8', errors='replace'))
+        except OSError:
+            continue
+
+    # namespace.Type -> file ( a partial type keeps its first file ), main sources win over tests
+    declared: dict[str, str] = {}
+    namespaces: dict[pathlib.Path, list[str]] = {}
+    local_types: dict[pathlib.Path, set[str]] = {}
+    global_usings: set[str] = set()
+    for f in sorted(contents, key=lambda f: ('test' in f.as_posix().lower(), f.as_posix())):
+        content = contents[f]
+        declarations = [(m.start(), m.group(1)) for m in CSHARP_NAMESPACE.finditer(content)]
+        namespaces[f] = [name for _, name in declarations]
+        local_types[f] = set()
+        for t in CSHARP_TYPE.finditer(content):
+            enclosing = [name for start, name in declarations if start < t.start()]
+            if enclosing:
+                declared.setdefault(f'{enclosing[-1]}.{t.group(1)}', f.as_posix())
+            local_types[f].add(t.group(1))
+        global_usings.update(m.group(2) for m in CSHARP_USING.finditer(content) if m.group(1))
+
+    # namespace -> simple type name -> file
+    by_namespace: dict[str, dict[str, str]] = {}
+    for qualified, declaring in declared.items():
+        namespace, _, name = qualified.rpartition('.')
+        by_namespace.setdefault(namespace, {})[name] = declaring
+
+    sorted_global_usings = sorted(global_usings)
+    result: dict[str, list[dict[str, str]]] = {}
+    for f, content in contents.items():
+        visible: list[str] = []
+        for namespace in namespaces.get(f, []):
+            visible += csharp_enclosing_namespaces(namespace)
+        visible += [m.group(2) for m in CSHARP_USING.finditer(content) if not m.group(1)]
+        visible += sorted_global_usings
+        words = set(JAVA_CLASS_NAME.findall(content)) - local_types.get(f, set())
+        taken: set[str] = set()
+        mappings: list[dict[str, str]] = []
+        for namespace in dict.fromkeys(visible):
+            types = by_namespace.get(namespace, {})
+            for name in sorted(words.intersection(types)):
+                declaring = types[name]
+                if name not in taken and declaring != f.as_posix():
+                    taken.add(name)
+                    mappings.append({'from': f'{namespace}.{name}', 'to': declaring})
+        if mappings:
+            result[f.as_posix()] = mappings
+
+    return result
+
 def create_job_id(APPROVED_URL: str, BEARER_TOKEN: str, parsed_args: CliArgparse) -> typing.Optional[str]:
     headers = {'Authorization': f'Bearer {BEARER_TOKEN}'}
     host = parsed_args.use_external_vps if parsed_args.use_external_vps is not None else LOCALHOST
@@ -539,7 +620,11 @@ async def upload(
     n = len(files)
     percent = '%'
     # over all files, not per batch : a java import resolves to any file in the repo
-    file_mappings = resolve_file_mappings(scan_dirname, files) | resolve_java_package_mappings(scan_dirname, files)
+    file_mappings = (
+        resolve_file_mappings(scan_dirname, files)
+        | resolve_java_package_mappings(scan_dirname, files)
+        | resolve_csharp_namespace_mappings(scan_dirname, files)
+    )
     batches = math.ceil(n / UPLOAD_BATCH_SIZE)
     for i in range(batches):
         start = i * UPLOAD_BATCH_SIZE
