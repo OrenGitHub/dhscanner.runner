@@ -111,6 +111,10 @@ class DataflowLedger:
         """The reply to the very same query, when one was already asked."""
         return self._replies.get(_query_key(tag, contents))
 
+    def replies(self) -> list[dict[str, typing.Any]]:
+        """Every recorded reply ( the 0-sink pre-check's among them )."""
+        return list(self._replies.values())
+
     # -- reading --------------------------------------------------------------
 
     def untried_pairs(self) -> list[tuple[dict[str, typing.Any], dict[str, typing.Any]]]:

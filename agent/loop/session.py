@@ -369,6 +369,11 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
     known_locations: dict[LocationKey, dict[str, typing.Any]] = {}
     _collect_locations(endpoint.model_dump(), known_locations)
     _collect_locations([rec.model_dump(mode="json") for rec in history], known_locations)
+    # The sinks of the 0-sink pre-check reach the model through the ledger
+    # only : without them a retyped sink line is never snapped back ( the
+    # model sent ImageIO.read 428-429 as 429-429, twice -> "no path" ).
+    if ledger is not None:
+        _collect_locations(ledger.replies(), known_locations)
 
     response_format = _llm_response_format()
     tool_schema = _kbapi_tool_schema(_ALLOWED_TAGS)
@@ -534,11 +539,23 @@ def run_item_session(  # pylint: disable=too-many-arguments,too-many-locals,too-
                 continue
 
             contents = _snap_locations(contents, known_locations)
+            cached = ledger.cached_reply(tag, contents) if ledger is not None else None
+            if cached is None and time.monotonic() - started >= wall_clock_seconds:
+                # The wall clock is checked per kbapi call, not only per
+                # round : one round asked 6 dataflow queries, each one a
+                # qe timeout, and the "180 s" session ran ~10 min.
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps({
+                        "error": "session wall clock exhausted; query not run",
+                    }),
+                })
+                continue
             query_payload = {"tag": tag, "contents": contents}
             call_seq += 1
             hook.kbapi_call(call_seq, query_payload)
             kb_queries.append(query_payload)
-            cached = ledger.cached_reply(tag, contents) if ledger is not None else None
             if cached is not None:
                 # Asked before ( this session or an earlier one ) : the
                 # ledger answers, no budget spent.
@@ -629,7 +646,7 @@ _SINK_KINDS: typing.Final[tuple[str, ...]] = (
     "SSRF",
     "SQL",
 )
-_ZERO_SINKS_MAX_NUM_HOPS: typing.Final[int] = 10
+DEFAULT_ZERO_SINKS_MAX_NUM_HOPS: typing.Final[int] = 10
 _ZERO_SINKS_MAX_NUM_SINKS: typing.Final[int] = 50
 
 
@@ -639,6 +656,7 @@ def run_zero_sinks_check(
     kbapi_client: KbapiClient,
     trace_hook: typing.Optional[SessionTraceHook] = None,
     ledger: typing.Optional[DataflowLedger] = None,
+    max_num_hops: int = DEFAULT_ZERO_SINKS_MAX_NUM_HOPS,
 ) -> typing.Optional[SessionResult]:
     """A ``safe`` verdict when no tracked sink is control-flow reachable
     from the handler, else ``None`` ( a sink, or a kbapi failure ) and
@@ -649,7 +667,7 @@ def run_zero_sinks_check(
     contents: dict[str, typing.Any] = {
         "from": endpoint.handler_location.model_dump(),
         "sinks": list(_SINK_KINDS),
-        "maxNumHops": _ZERO_SINKS_MAX_NUM_HOPS,
+        "maxNumHops": max_num_hops,
         "maxNumSinks": _ZERO_SINKS_MAX_NUM_SINKS,
     }
     query = {"tag": tag, "contents": contents}
@@ -673,7 +691,7 @@ def run_zero_sinks_check(
             reason_for_verdict=(
                 "no tracked sink reachable: SelectControlFlowReachableSinks from "
                 f"{loc.filename}:{loc.lineStart}-{loc.lineEnd} returned 0 matches "
-                f"for {', '.join(_SINK_KINDS)} within {_ZERO_SINKS_MAX_NUM_HOPS} hops "
+                f"for {', '.join(_SINK_KINDS)} within {max_num_hops} hops "
                 "( settled by the outer loop, no LLM session )"
             ),
             enqueue=[],

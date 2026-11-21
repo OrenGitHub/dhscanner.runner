@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import typing
 
-from agent.loop.kbapi import KbapiClient, KbapiError
+from agent.loop.kbapi import DEFAULT_SEED_QUERY_TIMEOUT_SECONDS, KbapiClient, KbapiError
 from agent.loop.types import EndpointBucket, EndpointRef, Location
 
 
@@ -49,7 +49,12 @@ _SEED_QUERY: typing.Final[dict[str, typing.Any]] = {
 }
 
 
-def seed_initial_queue(client: KbapiClient, *, random_order: bool = False) -> list[EndpointRef]:
+def seed_initial_queue(
+    client: KbapiClient,
+    *,
+    random_order: bool = False,
+    timeout_seconds: int = DEFAULT_SEED_QUERY_TIMEOUT_SECONDS,
+) -> list[EndpointRef]:
     """Fire the seed query. Return the endpoint set, in reply order.
 
     Deduplicated on :pyattr:`EndpointRef.endpoint_id` so that a handler
@@ -57,11 +62,12 @@ def seed_initial_queue(client: KbapiClient, *, random_order: bool = False) -> li
     queue exactly once.
     """
     query = {**_SEED_QUERY, "orderEndpointsLexicographically": not random_order}
+    # A failed seed query is NOT an empty endpoint surface : returning []
+    # here printed "scan complete, 0 items" with exit code 0.
     try:
-        reply = client.query("SelectHttpHandlers", query)
+        reply = client.query("SelectHttpHandlers", query, timeout_seconds=timeout_seconds)
     except KbapiError as exc:
-        _log.warning("seed query SelectHttpHandlers failed: %s", exc)
-        return []
+        raise RuntimeError(f"seed query SelectHttpHandlers failed: {exc}") from exc
     seen: dict[str, EndpointRef] = {}
     for ref in _project_matches(reply):
         if ref.endpoint_id not in seen:

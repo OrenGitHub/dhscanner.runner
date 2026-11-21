@@ -16,12 +16,14 @@ import os
 import pathlib
 import sys
 
+from agent.loop.kbapi import DEFAULT_QUERY_TIMEOUT_SECONDS, DEFAULT_SEED_QUERY_TIMEOUT_SECONDS
 from agent.loop.loop import ScanConfig, run_scan
 from agent.loop.session import (
     DEFAULT_ENQUEUE_BUDGET,
     DEFAULT_KBAPI_QUERY_BUDGET,
     DEFAULT_OPENAI_TIMEOUT_SECONDS,
     DEFAULT_WALL_CLOCK_SECONDS,
+    DEFAULT_ZERO_SINKS_MAX_NUM_HOPS,
 )
 
 _DEFAULT_KBAPI_URL = "http://localhost:3000/api"
@@ -158,6 +160,38 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--zero-sinks-max-num-hops",
+        type=_non_negative_int,
+        default=DEFAULT_ZERO_SINKS_MAX_NUM_HOPS,
+        metavar="N",
+        help=(
+            "inter-procedural hops of the 0-sink pre-check : an endpoint with "
+            "no tracked sink reachable within N hops is `safe` without an LLM "
+            f"session ( 0 = the handler's own body; default: {DEFAULT_ZERO_SINKS_MAX_NUM_HOPS} )"
+        ),
+    )
+    parser.add_argument(
+        "--query-timeout-s",
+        type=_timeout_seconds,
+        default=DEFAULT_QUERY_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "per-query bound sent to the queryengine, which answers HTTP 504 "
+            "past it ( a tool error, never an empty answer; 1 .. 600, "
+            f"default: {DEFAULT_QUERY_TIMEOUT_SECONDS} )"
+        ),
+    )
+    parser.add_argument(
+        "--seed-query-timeout-s",
+        type=_timeout_seconds,
+        default=DEFAULT_SEED_QUERY_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "bound for the one seed query ( the endpoints collection ), "
+            f"1 .. 600 ( default: {DEFAULT_SEED_QUERY_TIMEOUT_SECONDS} )"
+        ),
+    )
+    parser.add_argument(
         "--max-wall-clock-s",
         type=_positive_float,
         default=None,
@@ -191,6 +225,23 @@ def _positive_int(raw: str) -> int:
         raise argparse.ArgumentTypeError(f"not an int: {raw}") from exc
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
+def _non_negative_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an int: {raw}") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {value}")
+    return value
+
+
+def _timeout_seconds(raw: str) -> int:
+    value = _positive_int(raw)
+    if value > 600:
+        raise argparse.ArgumentTypeError(f"must be <= 600 ( the queryengine's cap ), got {value}")
     return value
 
 
@@ -238,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
         random_order=args.use_random_endpoints_order,
         endpoints=tuple(args.endpoints) if args.endpoints else None,
         max_sessions_per_endpoint=args.max_sessions_per_endpoint,
+        zero_sinks_max_num_hops=args.zero_sinks_max_num_hops,
+        query_timeout_s=args.query_timeout_s,
+        seed_query_timeout_s=args.seed_query_timeout_s,
         trace_root=args.trace_root,
     )
 
