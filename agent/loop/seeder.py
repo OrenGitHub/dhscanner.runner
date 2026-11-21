@@ -57,11 +57,12 @@ def seed_initial_queue(client: KbapiClient, *, random_order: bool = False) -> li
     queue exactly once.
     """
     query = {**_SEED_QUERY, "orderEndpointsLexicographically": not random_order}
+    # A failed seed query is NOT an empty endpoint surface : returning []
+    # here printed "scan complete, 0 items" with exit code 0.
     try:
         reply = client.query("SelectHttpHandlers", query)
     except KbapiError as exc:
-        _log.warning("seed query SelectHttpHandlers failed: %s", exc)
-        return []
+        raise RuntimeError(f"seed query SelectHttpHandlers failed: {exc}") from exc
     seen: dict[str, EndpointRef] = {}
     for ref in _project_matches(reply):
         if ref.endpoint_id not in seen:
