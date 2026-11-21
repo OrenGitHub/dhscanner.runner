@@ -23,10 +23,15 @@ import requests
 
 
 DEFAULT_URL: typing.Final[str] = "http://localhost:3000/api"
-# Above the queryengine's own 180 s per-query swipl bound ( Swipl.hs ),
-# so a slow query is answered ( or reported by qe ) instead of dropped
-# by the client : the seed query takes ~40 s on a 1.2k-file Java repo.
-DEFAULT_TIMEOUT_SECONDS: typing.Final[float] = 200.0
+# The per-query bound, sent to the queryengine ( `?timeout_seconds=` ) :
+# it stops swipl and answers HTTP 504, never an empty answer. Measured on
+# a 1.2k-file Java repo ( 589 queries ) : every dataflow path found took
+# <= 1.7 s; the seed query ~39 s alone, more with 10 loops in parallel.
+DEFAULT_QUERY_TIMEOUT_SECONDS: typing.Final[int] = 45
+DEFAULT_SEED_QUERY_TIMEOUT_SECONDS: typing.Final[int] = 60
+# The http client waits this much longer than the bound it sent, so the
+# 504 arrives instead of a client side timeout.
+_HTTP_GRACE_SECONDS: typing.Final[float] = 15.0
 
 _log = logging.getLogger(__name__)
 
@@ -43,19 +48,28 @@ class KbapiClient:
         kb_location: str,
         *,
         url: str = DEFAULT_URL,
-        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        query_timeout_seconds: int = DEFAULT_QUERY_TIMEOUT_SECONDS,
     ) -> None:
         self._kb_location = kb_location
         self._url = url
-        self._timeout = timeout_seconds
+        self._query_timeout = query_timeout_seconds
         self._session = requests.Session()
 
     @property
     def kb_location(self) -> str:
         return self._kb_location
 
-    def query(self, tag: str, contents: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    def query(
+        self,
+        tag: str,
+        contents: dict[str, typing.Any],
+        *,
+        timeout_seconds: typing.Optional[int] = None,
+    ) -> dict[str, typing.Any]:
         """Fire one query. Returns the parsed JSON reply.
+
+        ``timeout_seconds`` overrides the client's per-query bound for
+        this one query ( eg the seed ).
 
         Both ``tag`` and ``contents`` are forwarded verbatim \u2014 the
         kbapi tagged-union discipline (Kbapi.Query) is enforced
@@ -64,22 +78,25 @@ class KbapiClient:
         it and we surface that rejection as a :class:`KbapiError`.
         """
         body: dict[str, typing.Any] = {"tag": tag, "contents": contents}
-        params = {"kb_location": self._kb_location}
+        bound = timeout_seconds or self._query_timeout
+        params = {"kb_location": self._kb_location, "timeout_seconds": str(bound)}
         started = time.monotonic()
         try:
             resp = self._session.post(
                 self._url,
                 params=params,
                 json=body,
-                timeout=self._timeout,
+                timeout=bound + _HTTP_GRACE_SECONDS,
             )
         except requests.exceptions.RequestException as exc:
             raise KbapiError(f"kbapi request failed: {exc}") from exc
         elapsed = time.monotonic() - started
         if resp.status_code != http.HTTPStatus.OK:
+            # the body says why, eg qe's 504 "DataFlowPath timed out after
+            # 45 s ( no answer, NOT an empty answer )" : the model reads it
             raise KbapiError(
                 f"kbapi returned HTTP {resp.status_code} after {elapsed:.3f}s "
-                f"for tag={tag!r}"
+                f"for tag={tag!r}: {resp.text[:300]}"
             )
         try:
             reply = resp.json()

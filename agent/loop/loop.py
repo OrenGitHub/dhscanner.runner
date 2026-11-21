@@ -30,7 +30,11 @@ import typing
 
 from agent.loop.digest import ScanDigest
 from agent.loop.findings import FindingsStore
-from agent.loop.kbapi import KbapiClient
+from agent.loop.kbapi import (
+    DEFAULT_QUERY_TIMEOUT_SECONDS,
+    DEFAULT_SEED_QUERY_TIMEOUT_SECONDS,
+    KbapiClient,
+)
 from agent.loop.ledger import DataflowLedger
 from agent.loop.queue import TwoLaneDeque
 from agent.loop.seeder import seed_initial_queue, select_endpoints
@@ -40,6 +44,7 @@ from agent.loop.session import (
     DEFAULT_MODEL,
     DEFAULT_OPENAI_TIMEOUT_SECONDS,
     DEFAULT_WALL_CLOCK_SECONDS,
+    DEFAULT_ZERO_SINKS_MAX_NUM_HOPS,
     SessionResult,
     openai_api_key_present,
     run_item_session,
@@ -87,6 +92,12 @@ class ScanConfig:
     # An `inconclusive` endpoint with untried input x sink pairs goes back
     # on the queue, up to this many sessions on it ( agent/loop/ledger.py ).
     max_sessions_per_endpoint: int = 10
+    # Inter-procedural hops of the 0-sink pre-check ( no LLM when no
+    # tracked sink is reachable within them ). 0 = the handler's own body.
+    zero_sinks_max_num_hops: int = DEFAULT_ZERO_SINKS_MAX_NUM_HOPS
+    # Per-query bounds sent to the queryengine ( HTTP 504 past them ).
+    query_timeout_s: int = DEFAULT_QUERY_TIMEOUT_SECONDS
+    seed_query_timeout_s: int = DEFAULT_SEED_QUERY_TIMEOUT_SECONDS
     # Where the ScanTrace lands. ``None`` -> default under
     # ``agent/.scan_traces/<kb-basename>/<timestamp>/``.
     trace_root: typing.Optional[pathlib.Path] = None
@@ -121,7 +132,11 @@ def run_scan(config: ScanConfig) -> ScanResult:  # pylint: disable=too-many-loca
             "sessions. Export it or load it from a .env file first."
         )
 
-    kbapi = KbapiClient(config.kb_location, url=config.kbapi_url)
+    kbapi = KbapiClient(
+        config.kb_location,
+        url=config.kbapi_url,
+        query_timeout_seconds=config.query_timeout_s,
+    )
     queue = TwoLaneDeque()
     findings = FindingsStore()
     digest = ScanDigest()
@@ -142,6 +157,7 @@ def run_scan(config: ScanConfig) -> ScanResult:  # pylint: disable=too-many-loca
             kbapi=kbapi,
             random_order=config.random_order,
             endpoints=config.endpoints,
+            seed_timeout_s=config.seed_query_timeout_s,
         )
         return _drive(
             queue=queue,
@@ -168,11 +184,12 @@ def _seed(  # pylint: disable=too-many-arguments
     kbapi: KbapiClient,
     random_order: bool,
     endpoints: typing.Optional[tuple[str, ...]] = None,
+    seed_timeout_s: int = DEFAULT_SEED_QUERY_TIMEOUT_SECONDS,
 ) -> None:
     # ``findings`` is intentionally absent here: seed-time entries live
     # on the queue + digest only; the per-endpoint history is populated
     # by the first fresh session on each endpoint (\u00a74.6 ritual).
-    seeded = seed_initial_queue(kbapi, random_order=random_order)
+    seeded = seed_initial_queue(kbapi, random_order=random_order, timeout_seconds=seed_timeout_s)
     if endpoints is not None:
         seeded = select_endpoints(seeded, endpoints)
     for ref in seeded:
@@ -236,6 +253,7 @@ def _drive(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branc
                 kbapi_client=kbapi,
                 trace_hook=hook,
                 ledger=ledger,
+                max_num_hops=config.zero_sinks_max_num_hops,
             )
         if session_result is None:
             session_result = run_item_session(
