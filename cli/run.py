@@ -24,6 +24,7 @@ from cli.argparse_wrapper import (
 )
 from agent import launcher as local_app_launcher
 from cli import logger as cli_logger
+from cli.php_mappings import resolve_php_namespace_mappings
 
 LOCALHOST: typing.Final[str] = 'http://localhost'
 PORT: typing.Final[int] = 8000
@@ -624,6 +625,7 @@ async def upload(
         resolve_file_mappings(scan_dirname, files)
         | resolve_java_package_mappings(scan_dirname, files)
         | resolve_csharp_namespace_mappings(scan_dirname, files)
+        | resolve_php_namespace_mappings(scan_dirname, files)
     )
     batches = math.ceil(n / UPLOAD_BATCH_SIZE)
     for i in range(batches):
