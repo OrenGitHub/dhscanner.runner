@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import typing
 
+from agent.loop import kbapi
+
 
 LocationKey = tuple[str, int, int]
 
@@ -104,8 +106,7 @@ class DataflowLedger:
         elif tag == _DATAFLOW_TAG:
             src, dst = location_key(contents.get("from")), location_key(contents.get("to"))
             if src is not None and dst is not None:
-                path = found.get("path")
-                self._tried[(src, dst)] = path if isinstance(path, list) else None
+                self._tried[(src, dst)] = kbapi.dataflow_path(found)
 
     def cached_reply(self, tag: str, contents: dict[str, typing.Any]) -> typing.Optional[dict[str, typing.Any]]:
         """The reply to the very same query, when one was already asked."""

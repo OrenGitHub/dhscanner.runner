@@ -81,6 +81,14 @@ EXPECTED = [
 ]
 
 
+
+def dataflow_path(content: typing.Any) -> typing.Optional[list[typing.Any]]:
+    """The path of a SelectDataFlowPath reply's contents ( kbapi >= 2.0.0 ), None when there is none."""
+    fields = {"PlainDataFlowPath": "plainDataFlowPath", "DbWriteDataFlowPath": "dbWriteDataFlowPath"}
+    field = fields.get(str(content.get("tag"))) if isinstance(content, dict) else None
+    path = content["contents"].get(field) if field is not None else None
+    return path if isinstance(path, list) else None
+
 def query(kb_location: str, tag: str, contents: dict[str, typing.Any]) -> dict[str, typing.Any]:
     request = urllib.request.Request(
         f"{KBAPI_URL}?kb_location={kb_location}",
@@ -143,7 +151,7 @@ def check_dataflow(kb_location: str, expected: Expected, inputs: list[Location],
     key = sink_key(sink)
     flows = False
     for user_input in inputs:
-        path = query(kb_location, "SelectDataFlowPath", {"from": user_input, "to": sink, "maxNumIntraProceduralEdges": 50, "maxNumInterProceduralEdges": 10})["contents"]["path"]
+        path = dataflow_path(query(kb_location, "SelectDataFlowPath", {"from": user_input, "to": sink, "maxNumIntraProceduralEdges": 50, "maxNumInterProceduralEdges": 10})["contents"])
         steps = "null" if path is None else f"{len(path)} steps : " + " -> ".join(f"{p['lineStart']}:{p['colStart']}" for p in path)
         print(f"   dataflow {user_input['lineStart']}:{user_input['colStart']} -> {key} : {steps}")
         flows = flows or path is not None

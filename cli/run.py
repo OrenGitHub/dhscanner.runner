@@ -916,7 +916,7 @@ def run(parsed_args: CliRunArgparse, APPROVED_URL: str, BEARER_TOKEN: str) -> No
                             logging.info('[ step 4 ] now %s', what_should_happen_next)
                             time.sleep(NUM_SECONDS_BETEEN_STEP_CHECK)
                         else:
-                            logging.info('[ step 5 ] finished 🙂')
+                            logging.info('[ step 5 ] finished')
                             results = get_results(job_id, APPROVED_URL, BEARER_TOKEN, parsed_args)
                             kb_location = results.get('kb_location')
                             if isinstance(kb_location, str):
@@ -974,7 +974,7 @@ def main_entry() -> None:
     # the repo-root .env is the single source of config ( approved url,
     # bearer token, openai key ) : it wins over stale shell exports
     dotenv.load_dotenv(dotenv_path=REPO_ROOT_DOTENV, override=True)
-    logging.info('[ step 0 ] required args ok 😊')
+    logging.info('[ step 0 ] required args ok')
     # The launch-local-app subcommand only ever drives a local
     # subprocess + OpenAI; it never reaches an approved url or a
     # bearer token, so we bypass the env-var gate that the other two

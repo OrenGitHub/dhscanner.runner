@@ -35,6 +35,23 @@ _HTTP_GRACE_SECONDS: typing.Final[float] = 15.0
 
 _log = logging.getLogger(__name__)
 
+# `WithDataFlowPath.Content` ( kbapi >= 2.0.0 ) : `NoDataFlowPath`, or the
+# path under the field its constructor names
+_DATAFLOW_PATH_FIELDS: typing.Final[dict[str, str]] = {
+    "PlainDataFlowPath": "plainDataFlowPath",
+    "DbWriteDataFlowPath": "dbWriteDataFlowPath",
+}
+
+
+def dataflow_path(content: typing.Any) -> typing.Optional[list[typing.Any]]:
+    """The path of a ``FoundDataFlowPath`` reply's contents, ``None`` when there is none."""
+    if not isinstance(content, dict):
+        return None
+    field = _DATAFLOW_PATH_FIELDS.get(str(content.get("tag")))
+    inner = content.get("contents")
+    path = inner.get(field) if field is not None and isinstance(inner, dict) else None
+    return path if isinstance(path, list) else None
+
 
 class KbapiError(RuntimeError):
     """Any non-2xx or malformed-JSON kbapi reply. The outer loop
