@@ -47,6 +47,14 @@ SINK = (EVENTS_CONTROLLER, 24)
 Location = dict[str, typing.Any]
 
 
+
+def dataflow_path(content: typing.Any) -> typing.Optional[list[typing.Any]]:
+    """The path of a SelectDataFlowPath reply's contents ( kbapi >= 2.0.0 ), None when there is none."""
+    fields = {"PlainDataFlowPath": "plainDataFlowPath", "DbWriteDataFlowPath": "dbWriteDataFlowPath"}
+    field = fields.get(str(content.get("tag"))) if isinstance(content, dict) else None
+    path = content["contents"].get(field) if field is not None else None
+    return path if isinstance(path, list) else None
+
 def query(kb_location: str, tag: str, contents: dict[str, typing.Any]) -> dict[str, typing.Any]:
     request = urllib.request.Request(
         f"{KBAPI_URL}?kb_location={kb_location}",
@@ -104,7 +112,7 @@ def check(kb_location: str) -> list[str]:
     if len(sinks) != 1:
         return [f"open redirect sink {SINK} not reachable"]
 
-    path = query(kb_location, "SelectDataFlowPath", {"from": inputs[0], "to": sinks[0], "maxNumIntraProceduralEdges": 50, "maxNumInterProceduralEdges": 10})["contents"]["path"]
+    path = dataflow_path(query(kb_location, "SelectDataFlowPath", {"from": inputs[0], "to": sinks[0], "maxNumIntraProceduralEdges": 50, "maxNumInterProceduralEdges": 10})["contents"])
     if path is None:
         return [f"no dataflow :{USER_INPUT_LINE} -> {SINK}"]
     print("   dataflow : " + " -> ".join(f"{p['filename'].rsplit('/', 1)[-1]}:{p['lineStart']}:{p['colStart']}-{p['colEnd']}" for p in path))

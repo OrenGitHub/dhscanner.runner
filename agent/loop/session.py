@@ -163,7 +163,8 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "  SelectControlFlowReachableSinks:\n"
     "    { from: Location,\n"
     "      sinks: [ \"FileOperationRead\" | \"FileOperationWrite\" |\n"
-    "               \"FileOperationDelete\" | \"OpenRedirect\" | \"SSRF\" | \"SQL\" ],\n"
+    "               \"FileOperationDelete\" | \"OpenRedirect\" | \"SSRF\" | \"SQL\" |\n"
+    "               \"DbWrite\" ],\n"
     "      maxNumHops: int,\n"
     "      maxNumSinks: int }\n"
     "    -> each match's `location` is the sink CALL SITE, with its\n"
@@ -175,8 +176,13 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "      to: Location,\n"
     "      maxNumIntraProceduralEdges: int,\n"
     "      maxNumInterProceduralEdges: int }\n"
-    "    -> { path: null | [ Location ] }. Use a user input's location\n"
-    "       as `from` and a sink call site as `to`.\n"
+    "    -> { tag: \"NoDataFlowPath\" }\n"
+    "     | { tag: \"PlainDataFlowPath\", contents: { plainDataFlowPath: [ Location ] } }\n"
+    "     | { tag: \"DbWriteDataFlowPath\",\n"
+    "         contents: { model: string, column: string, dbWriteDataFlowPath: [ Location ] } }.\n"
+    "       Use a user input's location as `from` and a sink call site as\n"
+    "       `to`. A `DbWriteDataFlowPath` stores the input in that column\n"
+    "       of that model ( the `to` is a `DbWrite` sink ).\n"
     "\n"
     "  SelectSanitizers:\n"
     "    { userInput: Location,\n"
@@ -645,6 +651,7 @@ _SINK_KINDS: typing.Final[tuple[str, ...]] = (
     "OpenRedirect",
     "SSRF",
     "SQL",
+    "DbWrite",
 )
 DEFAULT_ZERO_SINKS_MAX_NUM_HOPS: typing.Final[int] = 10
 _ZERO_SINKS_MAX_NUM_SINKS: typing.Final[int] = 50

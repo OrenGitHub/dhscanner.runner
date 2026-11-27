@@ -58,7 +58,7 @@ def save_json(output: pathlib.Path, content: dict) -> None:
 
 
 def main(parsed_args: Argparse) -> None:
-    logging.info('[ step 0 ] required args ok 😊')
+    logging.info('[ step 0 ] required args ok')
     logging.info('[ step 1 ] running kb api query')
     if results := run_query(parsed_args.use_kb):
         save_json(parsed_args.save_sarif_to, results)

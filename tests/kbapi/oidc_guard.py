@@ -24,6 +24,14 @@ KBAPI_URL = "http://queryengine:3000/api"
 FILENAME = "dspace-server-webapp/src/main/java/org/dspace/app/rest/OidcRestController.java"
 
 
+
+def dataflow_path(content: typing.Any) -> typing.Optional[list[typing.Any]]:
+    """The path of a SelectDataFlowPath reply's contents ( kbapi >= 2.0.0 ), None when there is none."""
+    fields = {"PlainDataFlowPath": "plainDataFlowPath", "DbWriteDataFlowPath": "dbWriteDataFlowPath"}
+    field = fields.get(str(content.get("tag"))) if isinstance(content, dict) else None
+    path = content["contents"].get(field) if field is not None else None
+    return path if isinstance(path, list) else None
+
 def location(line_start: int, col_start: int, line_end: int, col_end: int) -> dict[str, typing.Any]:
     return {
         "filename": FILENAME,
@@ -113,7 +121,7 @@ def check_dataflow(kb_location: str) -> list[str]:
         "maxNumIntraProceduralEdges": 10,
         "maxNumInterProceduralEdges": 1,
     })
-    path = reply["path"]
+    path = dataflow_path(reply)
     if not path or path[0] != USER_INPUT or path[-1] != SINK:
         return ["SelectDataFlowPath: no path from :54 to :71"]
     return []
