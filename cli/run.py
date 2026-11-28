@@ -628,6 +628,7 @@ async def upload(
         | resolve_php_namespace_mappings(scan_dirname, files)
     )
     batches = math.ceil(n / UPLOAD_BATCH_SIZE)
+    failed_upload = 0
     for i in range(batches):
         start = i * UPLOAD_BATCH_SIZE
         end = (i + 1) * UPLOAD_BATCH_SIZE
@@ -644,6 +645,7 @@ async def upload(
                     parsed_args
                 )
             )
+        failed_upload += results.count(False)
         # Multiply before dividing so the percentage doesn't get floored to
         # 0 when batches > 100 (e.g. 10258 files -> 103 batches, where
         # math.floor(100 / 103) == 0 used to make every log line read "0%").
@@ -657,7 +659,10 @@ async def upload(
         else:
             logging.debug('[ step 3 ] uploaded %s%s', overall_percentage, percent)
 
-    return all(results)
+    if failed_upload > 0:
+        logging.error('[ step 3 ] %s of %s files failed to upload', failed_upload, n)
+
+    return failed_upload == 0
 
 def analyze_url(APPROVED_URL: str, parsed_args: CliArgparse) -> str:
     host = parsed_args.use_external_vps if parsed_args.use_external_vps is not None else LOCALHOST

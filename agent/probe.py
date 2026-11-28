@@ -80,7 +80,7 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
         description=(
             "Drive ONE fresh agent-loop session on ONE handpicked endpoint. "
             "Everything you'd see in a full `python -m agent.loop` run, "
-            "except we filter the A\u222aB seed down to a single URL first."
+            "except we filter the A U B seed down to a single URL first."
         ),
     )
     p.add_argument("--kb", default="kb_XXXXXXXX1-2",
@@ -126,7 +126,7 @@ def _parse_args(argv: typing.Optional[list[str]] = None) -> argparse.Namespace:
 def _find_target(kbapi: KbapiClient, method: str, url_endswith: str) -> EndpointRef:
     print(f"[probe] firing seeder against kb={kbapi.kb_location} ...")
     seeded = seed_initial_queue(kbapi)
-    print(f"[probe] seeder returned {len(seeded)} endpoints (A \u222a B)")
+    print(f"[probe] seeder returned {len(seeded)} endpoints (A U B)")
     # The queryengine wraps URL atoms in single quotes (Prolog-style);
     # strip them for user-friendly substring matching.
     def _strip(u: str) -> str:
