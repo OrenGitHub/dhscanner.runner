@@ -199,7 +199,7 @@ def _seed(  # pylint: disable=too-many-arguments
         queue.push_back(ref)
     digest.bootstrap_from_seed(seeded)
     trace.queue_seeded(queue.snapshot_ids(), random_order=random_order)
-    _log.info("seeded %d endpoints (A \u222a B surface)", len(seeded))
+    _log.info("seeded %d endpoints (A U B surface)", len(seeded))
 
 
 # ---------------------------------------------------------------------------
