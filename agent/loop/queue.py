@@ -97,6 +97,20 @@ class TwoLaneDeque:
         """
         self._deque.append(ref)
 
+    def promote_front(self, ref: EndpointRef) -> None:
+        """Move a known item to the front : out of its place when it is
+        still queued, back on the queue when it was already popped.
+
+        For a pair-edge whose target is already known ( every seeded
+        endpoint is ) but now has new evidence on its history, eg a
+        stored input another endpoint wrote. The caller dedups the
+        evidence, so one ( parent, mechanism ) promotes a target once.
+        """
+        found = [queued for queued in self._deque if queued.endpoint_id == ref.endpoint_id]
+        for queued in found:
+            self._deque.remove(queued)
+        self._deque.appendleft(found[0] if found else ref)
+
     def pop_front(self) -> typing.Optional[EndpointRef]:
         if not self._deque:
             return None
