@@ -116,6 +116,21 @@ Hard constraints:
   the OTHER part (eg an error response) whether the check really
   restricts the input (eg exact host match vs prefix match), and cite
   the condition and the other part's calls in `reason_for_verdict`.
+* A `DBWriteDataFlowPath` means user input is STORED in that column of
+  that model : the danger is in the endpoints that read it back ( stored,
+  or second order, input ). Find them : list candidate handlers with
+  `SelectHttpHandlers` ( GET handlers, no url filter : the reader is often
+  a page far from the writer, eg a public page that renders the stored
+  value ), ask `SelectDBReads` ( model, column as reported ) on the likely
+  readers, and enqueue
+  each endpoint with a match : hint `front`, provenance mechanism
+  `stored_input`, and a `cause` that names the model and column, the
+  writing endpoint, and the `dbRead` location as JSON.
+* A `provenance_arrival` with mechanism `stored_input` in your history
+  means a column this endpoint reads holds user input stored by another
+  endpoint : use its `dbRead` location as a user input ( the `from` of
+  `SelectDataFlowPath` to this endpoint's sinks ). A path found from it is
+  a finding with both halves : cite the writing endpoint and the read.
 """
 
 
@@ -136,6 +151,7 @@ _ALLOWED_TAGS: tuple[str, ...] = (
     "SelectSanitizers",
     "SelectConstStrings",
     "SelectComments",
+    "SelectDBReads",
 )
 
 
@@ -164,7 +180,7 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "    { from: Location,\n"
     "      sinks: [ \"FileOperationRead\" | \"FileOperationWrite\" |\n"
     "               \"FileOperationDelete\" | \"OpenRedirect\" | \"SSRF\" | \"SQL\" |\n"
-    "               \"DbWrite\" ],\n"
+    "               \"DBWrite\" ],\n"
     "      maxNumHops: int,\n"
     "      maxNumSinks: int }\n"
     "    -> each match's `location` is the sink CALL SITE, with its\n"
@@ -178,11 +194,11 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "      maxNumInterProceduralEdges: int }\n"
     "    -> { tag: \"NoDataFlowPath\" }\n"
     "     | { tag: \"PlainDataFlowPath\", contents: { plainDataFlowPath: [ Location ] } }\n"
-    "     | { tag: \"DbWriteDataFlowPath\",\n"
+    "     | { tag: \"DBWriteDataFlowPath\",\n"
     "         contents: { model: string, column: string, dbWriteDataFlowPath: [ Location ] } }.\n"
     "       Use a user input's location as `from` and a sink call site as\n"
-    "       `to`. A `DbWriteDataFlowPath` stores the input in that column\n"
-    "       of that model ( the `to` is a `DbWrite` sink ).\n"
+    "       `to`. A `DBWriteDataFlowPath` stores the input in that column\n"
+    "       of that model ( the `to` is a `DBWrite` sink ).\n"
     "\n"
     "  SelectSanitizers:\n"
     "    { userInput: Location,\n"
@@ -202,6 +218,18 @@ _TAG_CONTENTS_DOC: typing.Final[str] = (
     "  SelectComments:\n"
     "    { inFunction: Location,\n"
     "      maxNumComments: int }\n"
+    "\n"
+    "  SelectDBReads:\n"
+    "    { endpoint: Location,\n"
+    "      model: string,\n"
+    "      column: string,\n"
+    "      maxNumInterProceduralHops: int,\n"
+    "      maxNumMatches: int }\n"
+    "    -> each match is a read of that column of that model which the\n"
+    "       endpoint ( a handler location ) reaches : `dbRead` ( a Location,\n"
+    "       the `from` of a SelectDataFlowPath ) and `endpointToDBRead`, the\n"
+    "       call sites from the endpoint down to it. Spell `model` /\n"
+    "       `column` as a `DBWriteDataFlowPath` reports them.\n"
     "\n"
     "The endpoint on your desk carries its `handler_location` ( the `from` "
     "of SelectControlFlowReachableSinks / the `inFunction` of "
@@ -628,9 +656,17 @@ def _snap_locations(
     if not isinstance(node, dict):
         return node
     key = location_key(node)
-    if key is not None and key in known:
+    if key is not None and key in known and _near_line(node, known[key]):
         return {**node, **known[key]}
     return {k: _snap_locations(v, known) for k, v in node.items()}
+
+
+def _near_line(typed: dict[str, typing.Any], known: dict[str, typing.Any]) -> bool:
+    """A retyped line is off by one at most. A handler location's columns
+    are not file offsets ( every method of a class spans cols 5 .. 5 ), so
+    the key alone would snap one handler onto another."""
+    line, known_line = typed.get("lineStart"), known.get("lineStart")
+    return isinstance(line, int) and isinstance(known_line, int) and abs(line - known_line) <= 1
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +687,7 @@ _SINK_KINDS: typing.Final[tuple[str, ...]] = (
     "OpenRedirect",
     "SSRF",
     "SQL",
-    "DbWrite",
+    "DBWrite",
 )
 DEFAULT_ZERO_SINKS_MAX_NUM_HOPS: typing.Final[int] = 10
 _ZERO_SINKS_MAX_NUM_SINKS: typing.Final[int] = 50

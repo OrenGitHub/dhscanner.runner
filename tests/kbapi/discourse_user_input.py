@@ -84,7 +84,7 @@ EXPECTED = [
 
 def dataflow_path(content: typing.Any) -> typing.Optional[list[typing.Any]]:
     """The path of a SelectDataFlowPath reply's contents ( kbapi >= 2.0.0 ), None when there is none."""
-    fields = {"PlainDataFlowPath": "plainDataFlowPath", "DbWriteDataFlowPath": "dbWriteDataFlowPath"}
+    fields = {"PlainDataFlowPath": "plainDataFlowPath", "DBWriteDataFlowPath": "dbWriteDataFlowPath"}
     field = fields.get(str(content.get("tag"))) if isinstance(content, dict) else None
     path = content["contents"].get(field) if field is not None else None
     return path if isinstance(path, list) else None

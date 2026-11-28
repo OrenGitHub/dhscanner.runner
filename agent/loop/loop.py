@@ -53,6 +53,9 @@ from agent.loop.session import (
 from agent.loop.trace import ScanTrace, default_trace_root
 from agent.loop.types import (
     EndpointRef,
+    HistoryEntry,
+    Hint,
+    Provenance,
     ProvenanceArrival,
     SessionRecord,
     Verdict,
@@ -382,6 +385,16 @@ def _reify_enqueues(  # pylint: disable=too-many-arguments
         trace.enqueue(item_id, proposal, accepted=True)
         accepted += 1
 
+        if (
+            not was_new
+            and proposal.hint is Hint.FRONT
+            and synthesized_provenance is not None
+            and not _arrived_before(findings.get(child), synthesized_provenance)
+        ):
+            # a known target with NEW evidence ( eg a stored input ) :
+            # look at it again, first ( once per parent + mechanism )
+            queue.promote_front(child)
+
         if synthesized_provenance is not None:
             arrival = ProvenanceArrival(
                 recorded_at=_now_iso(),
@@ -398,6 +411,13 @@ def _reify_enqueues(  # pylint: disable=too-many-arguments
                 synthesized_provenance.mechanism,
                 was_new,
             )
+
+
+def _arrived_before(history: list[HistoryEntry], provenance: Provenance) -> bool:
+    return any(
+        isinstance(entry, ProvenanceArrival) and entry.provenance == provenance
+        for entry in history
+    )
 
 
 def _enqueue_budget_for(_session_result: SessionResult) -> int:

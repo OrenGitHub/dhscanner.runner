@@ -39,7 +39,7 @@ _log = logging.getLogger(__name__)
 # path under the field its constructor names
 _DATAFLOW_PATH_FIELDS: typing.Final[dict[str, str]] = {
     "PlainDataFlowPath": "plainDataFlowPath",
-    "DbWriteDataFlowPath": "dbWriteDataFlowPath",
+    "DBWriteDataFlowPath": "dbWriteDataFlowPath",
 }
 
 
